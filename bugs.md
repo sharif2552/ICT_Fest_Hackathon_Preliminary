@@ -89,6 +89,7 @@ PUSHED
 | BUG-023 | ROOT_CAUSED | Abidur | 2026-07-09 | admin usage-report / cache freshness | Medium | | Cached usage report stays stale after booking create (`app/routers/bookings.py:132-134`, `app/cache.py`) |
 | BUG-024 | ROOT_CAUSED | Abidur | 2026-07-09 | room availability / cache freshness | Medium | | Cached availability stays stale after booking cancel (`app/routers/bookings.py:228-230`, `app/cache.py`) |
 | BUG-025 | ROOT_CAUSED | Abidur | 2026-07-09 | admin export / room_id tenancy error handling | Hard | | Unknown/cross-org `room_id` returns 200 empty CSV instead of 404 (`app/routers/admin.py:65-73`, `app/services/export.py`) |
+| BUG-026 | ROOT_CAUSED | Abidur | 2026-07-09 | admin usage-report / room creation cache freshness | Medium | | Cached usage report omits rooms created after the report was cached (`app/routers/rooms.py:42-58`, `app/cache.py`) |
 
 ## Confirmed Fixes
 
@@ -1276,3 +1277,38 @@ and GET /admin/export?room_id=999999&include_all=true.
 #### Root cause
 
 The export endpoint never validates a provided `room_id` against the caller's org before generating the CSV.
+
+---
+
+### BUG-026 - Usage report cache is not invalidated after room create
+
+Status: ROOT_CAUSED
+Owner: Abidur
+Last updated: 2026-07-09
+Difficulty guess: Medium
+Area / workflow: admin usage-report / room creation cache freshness
+
+#### Reproduction
+
+```text
+Fetch a usage report for a date, create a new room in the same org, then fetch
+the same report again.
+```
+
+#### Expected behavior
+
+```text
+The second report includes the new room with zero confirmed bookings and zero revenue.
+```
+
+#### Actual behavior before fix
+
+```text
+The second report returns the cached response and omits the newly created room.
+```
+
+#### Root cause
+
+`create_room` inserts a new room but never invalidates the org usage-report cache,
+even though Rule 12 requires usage reports to include rooms with zero bookings and
+reflect the current state immediately.
