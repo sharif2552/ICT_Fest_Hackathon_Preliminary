@@ -84,6 +84,11 @@ PUSHED
 | BUG-018 | REPORTED | nahid | 2026-07-09 | rate limit / concurrency | Medium | | `app/services/ratelimit.py:18-26` |
 | BUG-019 | REPORTED | nahid | 2026-07-09 | room stats / concurrency | Medium | | `app/services/stats.py:15-26` |
 | BUG-020 | CLAIMED | codex | 2026-07-09 | bookings / same-org member visibility | Hard | | Suspected missing owner check in `GET /bookings/{id}` (`app/routers/bookings.py`) |
+| BUG-021 | CLAIMED | codex | 2026-07-09 | cancellation / refund rounding | Medium | | Suspected half-cent rounding/truncation bug in `app/routers/bookings.py` and `app/services/refunds.py` |
+| BUG-022 | CLAIMED | codex | 2026-07-09 | notifications / liveness | Hard | | Suspected lock-order deadlock between `notify_created` and `notify_cancelled` (`app/services/notifications.py`) |
+| BUG-023 | CLAIMED | codex | 2026-07-09 | admin usage-report / cache freshness | Medium | | Suspected stale report cache after booking create (`app/routers/bookings.py`, `app/cache.py`) |
+| BUG-024 | CLAIMED | codex | 2026-07-09 | room availability / cache freshness | Medium | | Suspected stale availability cache after booking cancel (`app/routers/bookings.py`, `app/cache.py`) |
+| BUG-025 | CLAIMED | codex | 2026-07-09 | admin export / room_id tenancy error handling | Hard | | Suspected cross-org or unknown `room_id` returns 200 empty CSV instead of 404 (`app/services/export.py`) |
 
 ## Confirmed Fixes
 
