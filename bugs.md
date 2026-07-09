@@ -91,7 +91,7 @@ PUSHED
 | BUG-025 | REPORTED | Abidur | 2026-07-09 | admin export / room_id tenancy error handling | Hard | | Unknown/cross-org `room_id` returns 200 empty CSV instead of 404 (`app/routers/admin.py:65-73`, `app/services/export.py`) |
 | BUG-026 | REPORTED | Abidur | 2026-07-09 | admin usage-report / room creation cache freshness | Medium | | Cached usage report omits rooms created after the report was cached (`app/routers/rooms.py:42-58`, `app/cache.py`) |
 | BUG-027 | REPORTED | Abidur | 2026-07-09 | room stats / restart persistence | Hard | | Restarted process returns stats 0/0 for persisted confirmed booking because stats live only in memory (`app/routers/rooms.py:103-119`, `app/services/stats.py`) |
-| BUG-028 | ROOT_CAUSED | Abidur | 2026-07-09 | reference codes / persistence after restart | Hard | | Restarted process issues duplicate `CW-001000` for persisted DB (`app/services/reference.py`, `app/routers/bookings.py:117-130`) |
+| BUG-028 | ROOT_CAUSED | Abidur | 2026-07-09 | reference codes / restart uniqueness | Hard | | Restarted process issues duplicate `CW-001000` for persisted DB because the counter resets to `1000` (`app/services/reference.py`, `app/routers/bookings.py:117-130`) |
 
 ## Confirmed Fixes
 
@@ -1485,13 +1485,13 @@ Result:
 
 ---
 
-### BUG-028 - Reference codes repeat after API restart
+### BUG-028 - Reference codes can repeat after API restart
 
 Status: ROOT_CAUSED
 Owner: Abidur
 Last updated: 2026-07-09
 Difficulty guess: Hard
-Area / workflow: reference codes / persistence after restart
+Area / workflow: reference codes / restart uniqueness
 
 #### Reproduction
 
@@ -1503,7 +1503,7 @@ Process 2 starts fresh against the same SQLite DB and creates another booking.
 #### Expected behavior
 
 ```text
-The second booking receives a different reference_code.
+The second booking gets a new unique reference_code.
 ```
 
 #### Actual behavior before fix
@@ -1512,6 +1512,11 @@ The second booking receives a different reference_code.
 Process 1 booking: {"id": 1, "reference_code": "CW-001000"}
 Process 2 booking after restart: {"id": 2, "reference_code": "CW-001000"}
 ```
+
+#### Suspected or confirmed file/line
+
+- `app/services/reference.py`
+- `app/routers/bookings.py:117-130`
 
 #### Root cause
 
