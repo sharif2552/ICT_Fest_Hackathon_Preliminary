@@ -2,6 +2,7 @@
 import hashlib
 import hmac
 import os
+import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -27,6 +28,12 @@ _revoked_tokens: set[str] = set()
 # Refresh tokens are single-use: once presented to /auth/refresh, their jti
 # is recorded here so a replay of the same token is rejected.
 _used_refresh_tokens: set[str] = set()
+
+# Serializes the check-then-record critical section in revoke_access_token
+# and consume_refresh_token so two concurrent requests presenting the same
+# token can't both pass the "not yet invalidated" check before either
+# records it (and so both sets stay consistent with the persisted table).
+_invalidation_lock = threading.Lock()
 
 _PBKDF2_ROUNDS = 100_000
 
@@ -122,16 +129,18 @@ def _is_invalidated(db: Session, payload: dict) -> bool:
 
 
 def revoke_access_token(payload: dict, db: Session) -> None:
-    _revoked_tokens.add(payload["jti"])
-    _persist_invalidation(db, payload)
+    with _invalidation_lock:
+        _revoked_tokens.add(payload["jti"])
+        _persist_invalidation(db, payload)
 
 
 def consume_refresh_token(payload: dict, db: Session) -> None:
     """Mark a refresh token's jti as used; raise 401 if it was already used."""
-    if payload["jti"] in _used_refresh_tokens or _is_invalidated(db, payload):
-        raise AppError(401, "UNAUTHORIZED", "Refresh token already used")
-    _used_refresh_tokens.add(payload["jti"])
-    _persist_invalidation(db, payload)
+    with _invalidation_lock:
+        if payload["jti"] in _used_refresh_tokens or _is_invalidated(db, payload):
+            raise AppError(401, "UNAUTHORIZED", "Refresh token already used")
+        _used_refresh_tokens.add(payload["jti"])
+        _persist_invalidation(db, payload)
 
 
 def get_token_payload(request: Request, db: Session = Depends(get_db)) -> dict:
