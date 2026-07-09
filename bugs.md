@@ -97,7 +97,7 @@ PUSHED
 | BUG-031 | REPORTED | Abidur | 2026-07-09 | auth / concurrent organization registration | Hard | | Concurrent first registrations for the same new org returned 2x500; fixed by recovering from org/user unique races (`app/routers/auth.py:24-60`, `app/models.py:17-26`) |
 | BUG-032 | REPORTED | nahid + Abidur | 2026-07-09 | auth / concurrent logout-refresh token invalidation | Hard | 7af6a2c | Concurrent identical logout/refresh calls raced on `TokenInvalidation.jti`, raising uncaught `IntegrityError` -> raw non-JSON 500 (fixed with try/except+rollback in `_persist_invalidation`); separately, concurrent identical `/auth/refresh` calls could each pass the single-use check before either recorded it, so more than one could return 200 for the same refresh_token, violating Rule 8 -> closed with an `_invalidation_lock` around `consume_refresh_token`/`revoke_access_token` (`app/auth.py:93-143`) |
 | BUG-033 | REPORTED | nahid | 2026-07-09 | cancellation / refund-log and status-update atomicity | Hard | 7977e72 | `log_refund()` commits independently of the booking status-update commit in `cancel_booking`; a crash/failure between the two commits leaves a durable refund with `status` still `confirmed`, so a client retry re-enters `log_refund` and logs a second, unguarded duplicate refund; fixed by making `log_refund` flush (not commit) so the caller's single commit covers both writes atomically (`app/services/refunds.py:14-28`, `app/routers/bookings.py:226-231`) |
-| BUG-034 | CLAIMED | nahid | 2026-07-09 | booking rate limit / restart persistence | Medium | | Rate-limit buckets live only in a process-local dict (`_buckets`); an API restart silently resets every user's 20-req/60s window, same in-memory-state-lost-on-restart class as BUG-027/028/029 (`app/services/ratelimit.py:10-29`) |
+| BUG-034 | REPORTED | nahid | 2026-07-09 | booking rate limit / restart persistence | Medium | (pending) | Rate-limit buckets lived only in a process-local dict (`_buckets`); an API restart silently reset every user's 20-req/60s window, same in-memory-state-lost-on-restart class as BUG-027/028/029; fixed with a persisted `RateLimitEvent` table (`app/services/ratelimit.py`, `app/models.py:81-86`) |
 
 ## Confirmed Fixes
 
@@ -136,6 +136,7 @@ PUSHED
 | BUG-031 | concurrent org registration raced on unique organization name | current BUG-031 fix commit | 40 concurrent same-org registrations -> 40x201, roles 1 admin / 39 members | Abidur | Yes |
 | BUG-032 | `_persist_invalidation` checked-then-inserted against `TokenInvalidation.jti` with no lock/error handling; separately, `consume_refresh_token`'s already-used check + record was unguarded | 7af6a2c (claim) + fix commit + `_invalidation_lock` addendum | 8-thread `threading.Barrier` concurrent call -> 0 errors, 1 row; 20x concurrent HTTP `/auth/logout` -> 0x500, all JSON; 8x concurrent HTTP `/auth/refresh` with same token -> exactly 1x200, 7x401 | nahid + Abidur | Yes |
 | BUG-033 | `log_refund()` committed independently of the caller's booking-status-update commit, so a crash between the two commits left a durable refund against a still-`confirmed` booking, letting a retry double-log the refund | current BUG-033 fix commit | Monkeypatched `Session.commit` to fail on the status-update commit; crash left 0 refund rows + `confirmed` status (was 1 refund row + `confirmed` before the fix); retry then produced exactly 1 refund row + `cancelled` status | nahid | Yes |
+| BUG-034 | rate-limit window lived only in a process-local dict, reset on every restart | current BUG-034 fix commit | Consumed 15/20 slots, restarted the container, confirmed 15 `RateLimitEvent` rows survived; 5 more requests succeeded and the 6th was correctly rejected (429). 30-thread concurrency test still produced exactly 20 ok / 10 rejected (BUG-018 guarantee preserved) | nahid | Yes |
 
 ## Push Log
 
@@ -1922,5 +1923,81 @@ rows), so a retry reprocesses the cancellation exactly once.
 Same monkeypatch-forced crash on cancel_booking's (now single) commit:
   After crash  -> booking.status = "confirmed", RefundLog rows = 0
   After retry  -> booking.status = "cancelled",  RefundLog rows = 1, [2000]
+pytest tests/ -> 1 passed (no regression).
+```
+
+### BUG-034 - Booking rate-limit window did not survive an API restart
+
+Status: REPORTED
+Owner: nahid
+Last updated: 2026-07-09
+Difficulty guess: Medium
+Area / workflow: booking rate limit / restart persistence
+
+#### Reproduction
+
+```text
+1. Call ratelimit.record_and_check(user_id, db) 15 times for a fresh user
+   (well under the 20-request/60s cap).
+2. docker compose restart api (simulates a process restart / redeploy).
+3. Inspect how many of that user's rate-limit events survived the restart.
+4. Call record_and_check 6 more times and check how many succeed vs. 429.
+```
+
+#### Expected behavior
+
+```text
+The rolling 20-request/60s window is a security/abuse control and should be
+enforced across a restart: a user who had already used 15 of their 20 slots
+should only get 5 more before being rate-limited, exactly as if the process
+had never restarted.
+```
+
+#### Actual behavior before fix
+
+```text
+_buckets was a plain module-level dict: `_buckets: dict[int, list[float]] = {}`.
+A restart re-imports the module with a fresh, empty dict, so every user's
+window resets to zero regardless of how many requests they had just made.
+Same in-memory-state-lost-on-restart class as BUG-027 (stats), BUG-028
+(reference codes), and BUG-029 (token invalidation).
+```
+
+#### Suspected or confirmed file/line
+
+- `app/services/ratelimit.py:10-29` (previous in-memory implementation)
+- `app/routers/bookings.py:91` (caller)
+
+#### Root cause
+
+Rate-limit state was tracked purely in process memory (`_buckets`), never
+written to the database. Any process restart (deploy, crash, container
+recreate) silently reset every user's window to empty, undermining the
+20-request/60-second abuse control documented for booking creation.
+
+#### Fix summary
+
+Added a `RateLimitEvent(id, user_id, created_at)` table (`app/models.py`).
+`record_and_check(user_id, db)` now: prunes that user's events older than the
+60s window, inserts + commits the current attempt, then counts events still
+inside the window and raises `429 RATE_LIMITED` if the count exceeds 20 —
+same semantics as the old trim-then-append-then-check logic, just backed by
+the database instead of a module dict. The existing `threading.Lock` (the
+BUG-018 fix) is kept around the whole check so concurrent requests within a
+process still can't race past the limit. The one caller
+(`app/routers/bookings.py:91`) now passes `db` through.
+
+#### Verification after fix
+
+```text
+Consumed 15/20 slots for a test user, then `docker compose restart api`:
+  RateLimitEvent rows for that user after restart: 15 (survived)
+  5 more requests: all succeeded
+  6th request: rejected (429 RATE_LIMITED)
+  Final row count: 21
+
+30-thread concurrency test (fresh user, no lock removed):
+  ok=20, rejected=10 (unchanged from the pre-existing BUG-018 guarantee)
+
 pytest tests/ -> 1 passed (no regression).
 ```

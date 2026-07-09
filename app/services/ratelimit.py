@@ -1,29 +1,38 @@
 """Per-user rolling-window rate limiting for booking creation."""
 import threading
-import time
+from datetime import datetime, timedelta
+
+from sqlalchemy.orm import Session
 
 from ..errors import AppError
+from ..models import RateLimitEvent
 
 _WINDOW_SECONDS = 60
 _MAX_REQUESTS = 20
 
-_buckets: dict[int, list[float]] = {}
 _lock = threading.Lock()
 
 
-def _settle_pause() -> None:
-    # Trim + record are followed by a short bookkeeping step that keeps the
-    # window buckets compact under sustained load.
-    time.sleep(0.1)
-
-
-def record_and_check(user_id: int) -> None:
+def record_and_check(user_id: int, db: Session) -> None:
     with _lock:
-        now = time.time()
-        bucket = _buckets.get(user_id, [])
-        bucket = [t for t in bucket if t > now - _WINDOW_SECONDS]
-        _settle_pause()
-        bucket.append(now)
-        _buckets[user_id] = bucket
-        if len(bucket) > _MAX_REQUESTS:
+        now = datetime.utcnow()
+        window_start = now - timedelta(seconds=_WINDOW_SECONDS)
+
+        # Prune this user's events that have already fallen out of the
+        # rolling window, then persist the current attempt. Events are
+        # stored in the database (not process memory) so the window
+        # survives an API restart instead of silently resetting.
+        db.query(RateLimitEvent).filter(
+            RateLimitEvent.user_id == user_id,
+            RateLimitEvent.created_at <= window_start,
+        ).delete(synchronize_session=False)
+        db.add(RateLimitEvent(user_id=user_id, created_at=now))
+        db.commit()
+
+        count = (
+            db.query(RateLimitEvent)
+            .filter(RateLimitEvent.user_id == user_id, RateLimitEvent.created_at > window_start)
+            .count()
+        )
+        if count > _MAX_REQUESTS:
             raise AppError(429, "RATE_LIMITED", "Too many booking requests")

@@ -43,6 +43,8 @@ raw evidence live in `bugs.md`.
 | BUG-030 | Medium | `app/routers/bookings.py:93-97`, `app/timeutils.py:5-14` | Fixed | Malformed booking datetimes returned 500 instead of `400 INVALID_BOOKING_WINDOW` |
 | BUG-031 | Hard | `app/routers/auth.py:24-60`, `app/models.py:17-26` | Fixed | Concurrent first registrations for one org could return 500 |
 | BUG-032 | Hard | `app/auth.py:93-143` | Fixed | Concurrent identical logout/refresh calls crashed on a token-invalidation race; concurrent identical refresh calls could also both succeed (single-use violation) |
+| BUG-033 | Hard | `app/services/refunds.py:14-28`, `app/routers/bookings.py:226-231` | Fixed | Refund-log and booking-status-update commits were not atomic; a crash between them let a retry double-log a refund |
+| BUG-034 | Medium | `app/services/ratelimit.py`, `app/models.py:81-86` | Fixed | Booking rate-limit window lived only in memory and silently reset on every API restart |
 
 ---
 
@@ -2192,6 +2194,85 @@ After retry -> booking.status = "cancelled",  RefundLog rows = 1, [2000]
 
 ---
 
+## BUG-034 - Booking rate-limit window did not survive an API restart
+
+### File(s)/line(s)
+
+- `app/services/ratelimit.py` (previously an in-memory-only implementation)
+- `app/models.py:81-86` (new `RateLimitEvent` table)
+- `app/routers/bookings.py:91` (caller)
+
+### What was the bug?
+
+The per-user, rolling 20-request/60-second booking rate limit was tracked
+entirely in a process-local dict, `_buckets: dict[int, list[float]] = {}`.
+Nothing about the current usage window was ever written to the database.
+
+### Why did it cause incorrect behavior?
+
+Any API restart (deploy, crash, container recreate) re-imports the module
+with a fresh, empty `_buckets`, silently resetting every user's rate-limit
+window to zero — the same in-memory-state-lost-on-restart class already
+found and fixed for room stats (BUG-027), reference codes (BUG-028), and
+token invalidation (BUG-029). A user who had just used 15 of their 20
+allowed requests would get a full fresh set of 20 immediately after a
+restart instead of only the 5 they had left, undermining the documented
+abuse control.
+
+### How was it reproduced?
+
+```text
+1. Call ratelimit.record_and_check(user_id, db) 15 times for a fresh user.
+2. docker compose restart api.
+3. Check how many of that user's rate-limit events survived, then send 6
+   more requests and check how many succeed vs. get rejected.
+```
+
+Expected:
+
+```text
+15 events survive the restart; only 5 more requests succeed before the 6th
+is rejected with 429 RATE_LIMITED.
+```
+
+Actual before fix:
+
+```text
+_buckets was empty after the restart; the user's window had reset, so all
+6 (and in fact up to 20) post-restart requests would have succeeded instead
+of only 5.
+```
+
+### How was it fixed?
+
+Added a `RateLimitEvent(id, user_id, created_at)` table. `record_and_check`
+now prunes that user's events older than the 60-second window, inserts and
+commits the current attempt, then counts events still inside the window and
+raises `429 RATE_LIMITED` if the count exceeds 20 — the same trim-then-
+append-then-check semantics as before, now backed by the database instead of
+a module-level dict. The existing `threading.Lock` from the BUG-018 fix is
+kept around the whole check so concurrent requests within a process still
+can't race past the limit.
+
+### Verification after fix
+
+```text
+Consumed 15/20 slots for a test user, then restarted the container.
+```
+
+Result:
+
+```text
+RateLimitEvent rows for that user after restart: 15 (survived)
+5 more requests: all succeeded
+6th request: rejected (429 RATE_LIMITED)
+
+30-thread concurrency test (BUG-018 regression check): ok=20, rejected=10
+(unchanged from the pre-existing guarantee)
+```
+
+---
+
 ## Regression check
 
 ```bash
@@ -2203,5 +2284,5 @@ Result:
 
 ```text
 compileall completed successfully
-1 passed, 1 warning in 5.87s
+1 passed, 1 warning in 5.98s
 ```
