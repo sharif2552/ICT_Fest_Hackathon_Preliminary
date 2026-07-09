@@ -40,6 +40,7 @@ raw evidence live in `bugs.md`.
 | BUG-027 | Hard | `app/routers/rooms.py:103-119` | Fixed | Room stats returned 0/0 after restart because they read only in-memory counters |
 | BUG-028 | Hard | `app/services/reference.py:23-34`, `app/routers/bookings.py:117-125` | Fixed | Reference codes could repeat after restart because the in-memory counter reset |
 | BUG-029 | Hard | `app/models.py:72-79`, `app/auth.py:89-143`, `app/routers/auth.py:77-96` | Fixed | Logout and refresh-token invalidation were forgotten after restart |
+| BUG-030 | Medium | `app/routers/bookings.py:93-97`, `app/timeutils.py:5-14` | Fixed | Malformed booking datetimes returned 500 instead of `400 INVALID_BOOKING_WINDOW` |
 
 ---
 
@@ -1872,15 +1873,82 @@ persisted invalidations: b8d2db29 aa53848c
 
 ---
 
-## Regression check
+## BUG-030 - Malformed booking datetimes returned 500
 
-```bash
-docker compose exec api python -m pytest tests/ -v
+### File(s)/line(s)
+
+- `app/routers/bookings.py:93-97`
+- `app/timeutils.py:5-14`
+
+### What was the bug?
+
+`create_booking` called `parse_input_datetime` directly. For malformed strings,
+`datetime.fromisoformat` raised `ValueError`, and that exception was not
+converted into the API's documented application error format.
+
+### Why did it cause incorrect behavior?
+
+The API contract requires invalid booking windows to return
+`400 INVALID_BOOKING_WINDOW`. A malformed `start_time` or `end_time` instead
+surfaced as `500 Internal Server Error`.
+
+### How was it reproduced?
+
+```text
+POST /bookings with start_time = "not-a-date" and a valid end_time.
+POST /bookings with a valid start_time and end_time = "not-a-date".
+```
+
+Expected:
+
+```text
+400 {"code": "INVALID_BOOKING_WINDOW"}
+```
+
+Actual before fix:
+
+```text
+500 Internal Server Error
+```
+
+### How was it fixed?
+
+The booking router now wraps only the datetime parse step and maps parser
+failures to the contract error:
+
+```python
+try:
+    start = parse_input_datetime(payload.start_time)
+    end = parse_input_datetime(payload.end_time)
+except ValueError:
+    raise AppError(400, "INVALID_BOOKING_WINDOW", "invalid datetime")
+```
+
+### Verification after fix
+
+```text
+Run the same malformed start_time and malformed end_time requests.
 ```
 
 Result:
 
 ```text
-tests/test_smoke.py::test_core_flow PASSED
-1 passed, 1 warning in 1.65s
+malformed start_time -> 400 {"code": "INVALID_BOOKING_WINDOW"}
+malformed end_time -> 400 {"code": "INVALID_BOOKING_WINDOW"}
+```
+
+---
+
+## Regression check
+
+```bash
+python -m compileall app tests
+pytest -q
+```
+
+Result:
+
+```text
+compileall completed successfully
+1 passed, 2 warnings in 3.12s
 ```

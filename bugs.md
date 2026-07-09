@@ -93,7 +93,7 @@ PUSHED
 | BUG-027 | REPORTED | Abidur | 2026-07-09 | room stats / restart persistence | Hard | | Restarted process returns stats 0/0 for persisted confirmed booking because stats live only in memory (`app/routers/rooms.py:103-119`, `app/services/stats.py`) |
 | BUG-028 | REPORTED | Abidur | 2026-07-09 | reference codes / restart uniqueness | Hard | | Restarted process issues duplicate `CW-001000` for persisted DB because the counter resets to `1000` (`app/services/reference.py:23-34`, `app/routers/bookings.py:117-125`) |
 | BUG-029 | REPORTED | Abidur | 2026-07-09 | auth / token invalidation persistence | Hard | | Logout revocations and used refresh-token JTIs were forgotten after API restart because they lived only in memory (`app/models.py:72-79`, `app/auth.py:89-143`, `app/routers/auth.py:77-96`) |
-| BUG-030 | ROOT_CAUSED | Abidur | 2026-07-09 | bookings / malformed datetime validation | Medium | | Malformed `start_time`/`end_time` returns 500 because `ValueError` escapes datetime parsing instead of documented `400 INVALID_BOOKING_WINDOW` (`app/routers/bookings.py:92-104`, `app/timeutils.py:5-14`) |
+| BUG-030 | REPORTED | Abidur | 2026-07-09 | bookings / malformed datetime validation | Medium | | Malformed `start_time`/`end_time` returned 500 because `ValueError` escaped datetime parsing; fixed to return `400 INVALID_BOOKING_WINDOW` (`app/routers/bookings.py:93-97`, `app/timeutils.py:5-14`) |
 
 ## Confirmed Fixes
 
@@ -128,6 +128,7 @@ PUSHED
 | BUG-027 | stats endpoint read only process-local `_stats` instead of persisted bookings | current BUG-027 fix commit | Cleared `_stats` with persisted booking -> stats returns 1 / 3000 | Abidur | Yes |
 | BUG-028 | reference-code counter reset after restart and did not check persisted bookings | current BUG-028 fix commit | Persisted `CW-001000`, reset counter -> next code `CW-001001` | Abidur | Yes |
 | BUG-029 | token invalidation state stored only in process-local sets | current BUG-029 fix commit | Cleared in-memory sets -> persisted access/refresh invalidations still found | Abidur | Yes |
+| BUG-030 | malformed datetime strings raised uncaught `ValueError` in booking creation | current BUG-030 fix commit | malformed start_time/end_time -> 400 INVALID_BOOKING_WINDOW | Abidur | Yes |
 
 ## Push Log
 
@@ -1623,7 +1624,7 @@ persisted invalidations: b8d2db29 aa53848c
 
 ### BUG-030 - Malformed booking datetimes are not converted to contract errors
 
-Status: ROOT_CAUSED
+Status: REPORTED
 Owner: Abidur
 Last updated: 2026-07-09
 Difficulty guess: Medium
@@ -1652,7 +1653,7 @@ Malformed end_time response: 500 Internal Server Error
 #### Suspected or confirmed file/line
 
 - `app/timeutils.py`
-- `app/routers/bookings.py:92-104`
+- `app/routers/bookings.py:93-97`
 
 #### Root cause
 
@@ -1660,3 +1661,15 @@ Malformed end_time response: 500 Internal Server Error
 wrapper. `datetime.fromisoformat` raises `ValueError` for malformed strings, and
 that exception escapes FastAPI as a 500 instead of the documented
 `400 INVALID_BOOKING_WINDOW` application error.
+
+#### Fix summary
+
+`create_booking` now wraps the datetime parse step and converts `ValueError`
+into `AppError(400, "INVALID_BOOKING_WINDOW", "invalid datetime")`.
+
+#### Verification after fix
+
+```text
+Malformed start_time response: 400 {"code": "INVALID_BOOKING_WINDOW"}
+Malformed end_time response: 400 {"code": "INVALID_BOOKING_WINDOW"}
+```
