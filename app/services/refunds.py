@@ -23,6 +23,11 @@ def log_refund(db: Session, booking: Booking, percent: int) -> RefundLog:
         processed_at=datetime.utcnow(),
     )
     db.add(entry)
-    db.commit()
-    db.refresh(entry)
+    # Intentionally not committed here: the caller commits this insert in
+    # the same transaction as the booking status update so the two writes
+    # land atomically (see cancel_booking in routers/bookings.py). Committing
+    # independently would let a crash between the two commits leave a
+    # durable refund against a booking still marked "confirmed", so a retry
+    # would log a second, duplicate refund.
+    db.flush()
     return entry

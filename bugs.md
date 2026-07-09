@@ -96,7 +96,7 @@ PUSHED
 | BUG-030 | REPORTED | Abidur | 2026-07-09 | bookings / malformed datetime validation | Medium | | Malformed `start_time`/`end_time` returned 500 because `ValueError` escaped datetime parsing; fixed to return `400 INVALID_BOOKING_WINDOW` (`app/routers/bookings.py:93-97`, `app/timeutils.py:5-14`) |
 | BUG-031 | REPORTED | Abidur | 2026-07-09 | auth / concurrent organization registration | Hard | | Concurrent first registrations for the same new org returned 2x500; fixed by recovering from org/user unique races (`app/routers/auth.py:24-60`, `app/models.py:17-26`) |
 | BUG-032 | REPORTED | nahid | 2026-07-09 | auth / concurrent logout-refresh token invalidation | Hard | 7af6a2c | Concurrent identical logout or refresh calls raced on `TokenInvalidation.jti` unique constraint, raising uncaught `IntegrityError` -> raw non-JSON 500; fixed by catching `IntegrityError` and rolling back (`app/auth.py:93-106`) |
-| BUG-033 | CLAIMED | nahid | 2026-07-09 | cancellation / refund-log and status-update atomicity | Hard | | `log_refund()` commits independently of the booking status-update commit in `cancel_booking`; a crash/failure between the two commits leaves a durable refund with `status` still `confirmed`, so a client retry re-enters `log_refund` and logs a second, unguarded duplicate refund (`app/services/refunds.py:14-28`, `app/routers/bookings.py:226-231`) |
+| BUG-033 | REPORTED | nahid | 2026-07-09 | cancellation / refund-log and status-update atomicity | Hard | | `log_refund()` commits independently of the booking status-update commit in `cancel_booking`; a crash/failure between the two commits leaves a durable refund with `status` still `confirmed`, so a client retry re-enters `log_refund` and logs a second, unguarded duplicate refund; fixed by making `log_refund` flush (not commit) so the caller's single commit covers both writes atomically (`app/services/refunds.py:14-28`, `app/routers/bookings.py:226-231`) |
 
 ## Confirmed Fixes
 
@@ -134,6 +134,7 @@ PUSHED
 | BUG-030 | malformed datetime strings raised uncaught `ValueError` in booking creation | current BUG-030 fix commit | malformed start_time/end_time -> 400 INVALID_BOOKING_WINDOW | Abidur | Yes |
 | BUG-031 | concurrent org registration raced on unique organization name | current BUG-031 fix commit | 40 concurrent same-org registrations -> 40x201, roles 1 admin / 39 members | Abidur | Yes |
 | BUG-032 | `_persist_invalidation` checked-then-inserted against `TokenInvalidation.jti` unique constraint with no lock and no error handling | 7af6a2c (claim) + fix commit | 8-thread `threading.Barrier`-forced concurrent call -> 0 errors, 1 row (was 7/8 `IntegrityError`); 20x concurrent HTTP `/auth/logout` -> 0x500, all JSON | nahid | Yes |
+| BUG-033 | `log_refund()` committed independently of the caller's booking-status-update commit, so a crash between the two commits left a durable refund against a still-`confirmed` booking, letting a retry double-log the refund | current BUG-033 fix commit | Monkeypatched `Session.commit` to fail on the status-update commit; crash left 0 refund rows + `confirmed` status (was 1 refund row + `confirmed` before the fix); retry then produced exactly 1 refund row + `cancelled` status | nahid | Yes |
 
 ## Push Log
 
@@ -1814,5 +1815,92 @@ Barrier test (8 threads, same jti): 8/8 succeeded, 0 errors, final row
 count 1 (was 7/8 IntegrityError before the fix).
 HTTP test (20 concurrent /auth/logout, same token): Counter({401: 18, 200: 2}),
 0x500, all responses JSON.
+pytest tests/ -> 1 passed (no regression).
+```
+
+### BUG-033 - Refund log and booking status update are not committed atomically
+
+Status: REPORTED
+Owner: nahid
+Last updated: 2026-07-09
+Difficulty guess: Hard
+Area / workflow: cancellation / refund-log and status-update atomicity
+
+#### Reproduction
+
+```text
+1. Create a booking with a >=48h notice window (100% refund tier).
+2. Call cancel_booking directly, with Session.commit monkeypatched to raise
+   on the commit that follows log_refund's insert (simulating a worker
+   crash / DB failure between "refund logged" and "status flipped").
+3. Inspect DB state after the crash.
+4. Retry cancel_booking on the same booking_id (as any client reasonably
+   would after receiving a 500).
+5. Inspect DB state after the retry.
+```
+
+#### Expected behavior
+
+```text
+A crash between the refund write and the status write should leave neither
+durable (both roll back together), so a retry safely reprocesses the
+cancellation exactly once. Exactly one RefundLog row should ever exist per
+cancelled booking.
+```
+
+#### Actual behavior before fix
+
+```text
+log_refund() called its own db.commit() internally. cancel_booking() then
+did a SEPARATE db.commit() after setting booking.status = "cancelled".
+
+After the simulated crash (failing only the second, status-update commit):
+  booking.status = "confirmed"   (unchanged, as expected)
+  RefundLog rows  = 1, [2000]    (already durably committed - NOT expected)
+
+Retry (booking still shows "confirmed", so the ALREADY_CANCELLED guard does
+not trip):
+  booking.status = "cancelled"
+  RefundLog rows  = 2, [2000, 2000]   <- duplicate refund, same booking
+```
+
+#### Suspected or confirmed file/line
+
+- `app/services/refunds.py:14-28` (`log_refund` — internal `db.commit()`)
+- `app/routers/bookings.py:226-231` (`cancel_booking` — second, separate
+  `db.commit()` for the status update)
+
+#### Root cause
+
+`log_refund()` performs its own `db.commit()`, making the `RefundLog` insert
+durable and irreversible before `cancel_booking()` performs a second,
+independent `db.commit()` for `booking.status = "cancelled"`. These two
+writes are not part of one atomic transaction. If the process is interrupted
+between them (container restart, OOM kill, uncaught exception, SQLite busy
+error under contention — all realistic in production), the refund is
+permanently logged but the booking still reads `"confirmed"`. Because
+`cancel_booking`'s only idempotency guard is `if booking.status ==
+"cancelled": raise ALREADY_CANCELLED`, a retry against a booking left in this
+in-between state sails past that guard and calls `log_refund` a second time.
+`RefundLog` has no unique constraint on `booking_id` and `log_refund` has no
+check for a pre-existing refund, so the second call inserts a second,
+identical refund row with no error.
+
+#### Fix summary
+
+`log_refund()` no longer commits; it `db.flush()`es so the insert is visible
+within the current transaction (and the row gets its `id`), then returns
+control to the caller. `cancel_booking()`'s existing single `db.commit()` (the
+one that also persists `booking.status = "cancelled"`) now covers both writes
+in one transaction: either both land or neither does. A crash at any point
+before that commit leaves the booking untouched (`"confirmed"`, zero refund
+rows), so a retry reprocesses the cancellation exactly once.
+
+#### Verification after fix
+
+```text
+Same monkeypatch-forced crash on cancel_booking's (now single) commit:
+  After crash  -> booking.status = "confirmed", RefundLog rows = 0
+  After retry  -> booking.status = "cancelled",  RefundLog rows = 1, [2000]
 pytest tests/ -> 1 passed (no regression).
 ```

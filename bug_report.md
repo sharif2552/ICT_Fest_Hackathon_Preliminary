@@ -2086,6 +2086,92 @@ HTTP test: Counter({401: 18, 200: 2}), 0x500, all responses JSON.
 
 ---
 
+## BUG-033 - Refund log and booking status update were not committed atomically
+
+### File(s)/line(s)
+
+- `app/services/refunds.py:14-28` (`log_refund` — used its own `db.commit()`)
+- `app/routers/bookings.py:226-231` (`cancel_booking` — second, separate
+  `db.commit()` for the status update)
+
+### What was the bug?
+
+`log_refund()` inserted a `RefundLog` row and committed it in its own,
+independent database transaction. `cancel_booking()` then set
+`booking.status = "cancelled"` and issued a *second*, separate commit. The
+refund write and the status write were never part of one atomic transaction.
+
+### Why did it cause incorrect behavior?
+
+If the process was interrupted between the two commits — a container
+restart, an OOM kill, an uncaught exception, or a SQLite busy error under
+write contention, all realistic in production — the refund row was already
+durably committed while the booking still read `status = "confirmed"`.
+`cancel_booking`'s only idempotency guard is `if booking.status ==
+"cancelled": raise ALREADY_CANCELLED`, so a client retry after receiving a
+500 (the normal, expected client behavior) sailed past that guard, re-entered
+`log_refund`, and logged a **second**, duplicate refund for the same booking.
+`RefundLog` has no unique constraint on `booking_id` and `log_refund` had no
+pre-existing-refund check, so nothing stopped the duplicate insert. This is a
+real financial/accounting correctness bug: a booking could be refunded twice.
+
+### How was it reproduced?
+
+```text
+1. Create a booking with a >=48h cancellation notice window (100% refund).
+2. Call cancel_booking() directly with Session.commit monkeypatched to raise
+   on the commit that follows log_refund's own commit (simulating a crash
+   between "refund logged" and "status flipped").
+3. Inspect DB state after the simulated crash.
+4. Retry cancel_booking() on the same booking_id, as a client would after a
+   500.
+5. Inspect DB state after the retry.
+```
+
+Expected:
+
+```text
+A crash between the two writes should leave neither durable; a retry should
+reprocess the cancellation exactly once, producing exactly one refund row.
+```
+
+Actual before fix:
+
+```text
+After the simulated crash:
+  booking.status = "confirmed"  (unchanged, expected)
+  RefundLog rows  = 1, [2000]   (already durably committed - NOT expected)
+
+After the retry (booking still "confirmed", guard did not trip):
+  booking.status = "cancelled"
+  RefundLog rows  = 2, [2000, 2000]   <- duplicate refund on one booking
+```
+
+### How was it fixed?
+
+`log_refund()` no longer commits internally; it `db.flush()`es so the row is
+visible (and has its `id`) within the current transaction, then returns
+control to the caller. `cancel_booking()`'s existing single `db.commit()` —
+the same one that persists `booking.status = "cancelled"` — now covers both
+writes atomically: either both land or neither does. A crash at any point
+before that commit leaves the booking untouched (`"confirmed"`, zero refund
+rows), so a retry safely reprocesses the cancellation exactly once.
+
+### Verification after fix
+
+```text
+Same monkeypatch-forced crash on cancel_booking's (now single) commit.
+```
+
+Result:
+
+```text
+After crash -> booking.status = "confirmed", RefundLog rows = 0
+After retry -> booking.status = "cancelled",  RefundLog rows = 1, [2000]
+```
+
+---
+
 ## Regression check
 
 ```bash
@@ -2097,5 +2183,5 @@ Result:
 
 ```text
 compileall completed successfully
-1 passed, 1 warning in 5.45s
+1 passed, 1 warning in 5.87s
 ```
