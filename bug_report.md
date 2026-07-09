@@ -2745,17 +2745,20 @@ docker compose exec api python3 -m pytest tests/ -v -> 1 passed, 1 warning
 ```bash
 python -m compileall app tests
 pytest -q
-fresh temporary-DB focused contract suite
+full fresh temporary-DB API contract suite
 docker build + external HTTP smoke
+docker run --rm <image> python -m pytest tests -v
 ```
 
 Result:
 
 ```text
 compileall completed successfully
-pytest: 1 passed, 3 warnings in 4.32s
-focused contract suite: 51 checks passed across route contract,
-BUG-036/037/038/039, tenancy, and error shapes
+pytest: 1 passed, 3 warnings in 4.99s
+full API contract suite: 240 checks passed across route contract, auth,
+tenancy, booking rules, reports, export, rate limiting, validation,
+concurrency probes, and BUG-041 login timing checks
 Docker smoke: health, auth, malformed JWT 401, room validation, booking
 create, and validation-error rate-limit behavior passed
+Docker pytest workflow: rebuilt image runs `python -m pytest tests -v` -> 1 passed
 ```
