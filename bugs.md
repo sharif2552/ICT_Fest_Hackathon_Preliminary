@@ -94,6 +94,7 @@ PUSHED
 | BUG-028 | REPORTED | Abidur | 2026-07-09 | reference codes / restart uniqueness | Hard | | Restarted process issues duplicate `CW-001000` for persisted DB because the counter resets to `1000` (`app/services/reference.py:23-34`, `app/routers/bookings.py:117-125`) |
 | BUG-029 | REPORTED | Abidur | 2026-07-09 | auth / token invalidation persistence | Hard | | Logout revocations and used refresh-token JTIs were forgotten after API restart because they lived only in memory (`app/models.py:72-79`, `app/auth.py:89-143`, `app/routers/auth.py:77-96`) |
 | BUG-030 | REPORTED | Abidur | 2026-07-09 | bookings / malformed datetime validation | Medium | | Malformed `start_time`/`end_time` returned 500 because `ValueError` escaped datetime parsing; fixed to return `400 INVALID_BOOKING_WINDOW` (`app/routers/bookings.py:93-97`, `app/timeutils.py:5-14`) |
+| BUG-031 | CLAIMED | Abidur | 2026-07-09 | auth / concurrent organization registration | Hard | | Suspected concurrent first registrations for the same new org can race on the unique org name and return 500 instead of creating one admin and members (`app/routers/auth.py:18-43`) |
 
 ## Confirmed Fixes
 
@@ -1673,3 +1674,43 @@ into `AppError(400, "INVALID_BOOKING_WINDOW", "invalid datetime")`.
 Malformed start_time response: 400 {"code": "INVALID_BOOKING_WINDOW"}
 Malformed end_time response: 400 {"code": "INVALID_BOOKING_WINDOW"}
 ```
+
+---
+
+### BUG-031 - Concurrent first registrations for the same org can fail
+
+Status: CLAIMED
+Owner: Abidur
+Last updated: 2026-07-09
+Difficulty guess: Hard
+Area / workflow: auth / concurrent organization registration
+
+#### Reproduction
+
+```text
+Pending focused reproduction: submit concurrent POST /auth/register requests
+for the same new org_name with different usernames.
+```
+
+#### Expected behavior
+
+```text
+Exactly one request creates the organization admin; the rest join the now-known
+organization as members. No valid concurrent registration should return 500.
+```
+
+#### Actual behavior before fix
+
+```text
+Suspected: more than one request observes org == None and tries to insert the
+same unique organization name, causing an unhandled database error.
+```
+
+#### Suspected or confirmed file/line
+
+- `app/routers/auth.py:18-43`
+- `app/models.py:17-26`
+
+#### Root cause
+
+Pending focused reproduction.
