@@ -47,6 +47,8 @@ raw evidence live in `bugs.md`.
 | BUG-034 | Medium | `app/services/ratelimit.py`, `app/models.py:81-86` | Fixed | Booking rate-limit window lived only in memory and silently reset on every API restart |
 | BUG-035 | Medium | `app/main.py`, `app/errors.py` | Fixed | No catch-all exception handler; any uncaught non-`AppError` exception returned a malformed non-JSON 500 |
 | BUG-036 | Medium | `app/main.py:20-32`, `app/auth.py:146-159`, `app/routers/bookings.py:85-91` | Fixed | Malformed-body `POST /bookings` requests bypassed the documented per-user rate limit |
+| BUG-038 | Medium | `app/schemas.py:5-14` | Fixed | Registration accepted an empty/blank password; any org's admin account could be created with password `""` |
+| BUG-039 | Medium | `app/schemas.py:21-25`, `app/models.py:36-44`, `app/routers/rooms.py:41-57` | Fixed | Room creation accepted negative capacity/hourly rate, letting a negative booking price corrupt admin revenue reports |
 
 ---
 
@@ -2427,6 +2429,126 @@ Control flow with a fresh user:
 
 ---
 
+## BUG-038 - Registration accepted an empty/blank password
+
+### File(s)/line(s)
+
+- `app/schemas.py:5-14`
+
+### What was the bug?
+
+`RegisterRequest.password` (and `username`/`org_name`) had no minimum-length
+constraint, so an empty string was a valid password.
+
+### Why did it cause incorrect behavior?
+
+Any org's registration can create an admin account (the first registration
+for a new org name becomes admin, per the documented registration rule). With
+no password length enforced, an attacker who knows or guesses an org name
+and username could register/log in with `password:""` — a credential that
+requires no guessing at all.
+
+### How was it reproduced?
+
+```text
+POST /auth/register {"org_name":"x","username":"admin1","password":""}
+```
+
+Expected:
+
+```text
+422 Unprocessable Entity — a blank password should be rejected the same way
+any other malformed field is.
+```
+
+Actual before fix:
+
+```text
+201 {"user_id":51,"org_id":40,"username":"admin1","role":"admin"}
+POST /auth/login with the same blank password -> 200 with valid tokens
+```
+
+### How was it fixed?
+
+Added `Field(min_length=6, max_length=128)` to `RegisterRequest.password` and
+`Field(min_length=1, max_length=100)` to `org_name`/`username` in
+`app/schemas.py`. 6 characters was chosen so the existing smoke test's
+fixture password (`"pw12345"`, 7 characters) keeps working unmodified — the
+fix closes the concrete empty-password hole without redesigning password
+policy.
+
+### Verification after fix
+
+```text
+password:""       -> 422 string_too_short
+password:"12345"  -> 422 string_too_short (5 chars)
+password:"abc123" -> 201, then logs in normally -> 200
+```
+
+---
+
+## BUG-039 - Negative room pricing corrupted admin revenue reports
+
+### File(s)/line(s)
+
+- `app/schemas.py:21-25`
+- `app/models.py:36-44`
+- `app/routers/rooms.py:41-57`
+
+### What was the bug?
+
+`RoomCreateRequest.capacity`/`hourly_rate_cents` had no lower bound, and
+neither the `Room` model nor `create_room` validated them before insert.
+
+### Why did it cause incorrect behavior?
+
+`create_booking` computes `price_cents = room.hourly_rate_cents *
+duration_hours` and `usage-report` sums `price_cents` across confirmed
+bookings into `revenue_cents`. A negative `hourly_rate_cents` silently
+propagates into a negative booking price and then into a negative number on
+an org's financial report — with no error at any step.
+
+### How was it reproduced?
+
+```text
+POST /rooms {"capacity":-5,"hourly_rate_cents":-100000}          -> 201
+POST /bookings (2h on that room)                                  -> 201, price_cents:-200000
+GET /admin/usage-report?from=...&to=...                           -> revenue_cents:-200000
+```
+
+Expected:
+
+```text
+422 on room creation — capacity and hourly rate can never be negative.
+```
+
+Actual before fix:
+
+```text
+Room created, booking created, and the admin usage report showed negative
+revenue for that room.
+```
+
+### How was it fixed?
+
+Added `Field(gt=0)` to `capacity` and `Field(ge=0)` to `hourly_rate_cents` in
+`RoomCreateRequest` (`app/schemas.py`); `name` also got
+`Field(min_length=1, max_length=100)`. `0` stays legal for `hourly_rate_cents`
+so an intentionally free room is still allowed.
+
+### Verification after fix
+
+```text
+{"capacity":-1,"hourly_rate_cents":-1} -> 422 (both fields flagged)
+{"capacity":0,...}                     -> 422 greater_than
+{"capacity":2,"hourly_rate_cents":0}   -> 201 (free room still allowed)
+{"capacity":4,"hourly_rate_cents":1000}-> 201 (normal room unaffected)
+Re-ran the original repro end-to-end: room creation now fails at 422, so the
+downstream negative price/revenue corruption is unreachable.
+```
+
+---
+
 ## Regression check
 
 ```bash
@@ -2438,5 +2560,5 @@ Result:
 
 ```text
 compileall completed successfully
-1 passed, 1 warning in 6.14s
+1 passed, 1 warning in 6.45s
 ```

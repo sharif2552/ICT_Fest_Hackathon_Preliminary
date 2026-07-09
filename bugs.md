@@ -101,8 +101,8 @@ PUSHED
 | BUG-035 | REPORTED | nahid | 2026-07-09 | error handling / missing catch-all exception handler | Medium | 0a0b8a6 | `app/main.py` only registered a handler for `AppError`; any other uncaught exception (the exact root symptom behind BUG-030/031/032/033, each patched locally) fell through to Starlette's default handler and returned a raw `text/plain` 500, violating the documented `{"detail","code"}` JSON contract. Reproduced live with a generic `ZeroDivisionError` unrelated to any known bug; fixed with a global `Exception` handler (`app/main.py`, `app/errors.py`) |
 | BUG-036 | REPORTED | Abidur | 2026-07-09 | booking rate limit / framework validation requests | Medium | | Authenticated `POST /bookings` requests that fail FastAPI body validation did not count toward the documented 20-requests/60s rate limit; fixed by moving the per-user booking rate limit into middleware that runs before body validation and removing the endpoint-local duplicate check (`app/main.py:20-32`, `app/auth.py:146-159`, `app/routers/bookings.py:85-91`) |
 | BUG-037 | ROOT_CAUSED | Abidur | 2026-07-09 | auth / malformed JWT required claims | Hard | | Signed JWTs missing required claims are not rejected as invalid tokens: missing `jti`/`sub` or non-integer `sub` returns 500, and missing `exp` authenticates successfully with 200, violating Rule 8's required JWT claims and 401 invalid-token behavior (`app/auth.py:76-159`) |
-| BUG-038 | CLAIMED | nahid | 2026-07-09 | auth / registration schema validation | Medium | | `RegisterRequest` has no `min_length` on `password`/`username`/`org_name`; live-tested `POST /auth/register` with `password:""` -> 201, then `POST /auth/login` with the same empty password -> 200 with valid tokens, so any org's admin account can be created with a blank/guessable password (`app/schemas.py:5-14`) |
-| BUG-039 | CLAIMED | nahid | 2026-07-09 | rooms / pricing schema validation | Medium | | `RoomCreateRequest`/`Room` never validate `capacity`/`hourly_rate_cents` as non-negative; live-tested `POST /rooms` with `hourly_rate_cents:-100000` -> 201, booking it stored `price_cents:-200000`, and `GET /admin/usage-report` then showed `revenue_cents:-200000`, corrupting org financial reports (`app/schemas.py:21-25`, `app/models.py:36-44`, `app/routers/rooms.py:41-57`) |
+| BUG-038 | REPORTED | nahid | 2026-07-09 | auth / registration schema validation | Medium | 2230548 | `RegisterRequest` has no `min_length` on `password`/`username`/`org_name`; live-tested `POST /auth/register` with `password:""` -> 201, then `POST /auth/login` with the same empty password -> 200 with valid tokens, so any org's admin account can be created with a blank/guessable password (`app/schemas.py:5-14`) |
+| BUG-039 | REPORTED | nahid | 2026-07-09 | rooms / pricing schema validation | Medium | 2230548 | `RoomCreateRequest`/`Room` never validate `capacity`/`hourly_rate_cents` as non-negative; live-tested `POST /rooms` with `hourly_rate_cents:-100000` -> 201, booking it stored `price_cents:-200000`, and `GET /admin/usage-report` then showed `revenue_cents:-200000`, corrupting org financial reports (`app/schemas.py:21-25`, `app/models.py:36-44`, `app/routers/rooms.py:41-57`) |
 
 ## Confirmed Fixes
 
@@ -144,6 +144,8 @@ PUSHED
 | BUG-034 | rate-limit window lived only in a process-local dict, reset on every restart | current BUG-034 fix commit | Consumed 15/20 slots, restarted the container, confirmed 15 `RateLimitEvent` rows survived; 5 more requests succeeded and the 6th was correctly rejected (429). 30-thread concurrency test still produced exactly 20 ok / 10 rejected (BUG-018 guarantee preserved) | nahid | Yes |
 | BUG-035 | `app/main.py` registered a handler only for `AppError`; every other exception type fell through to Starlette's default plain-text 500 | current BUG-035 fix commit | Forced a generic `ZeroDivisionError` (unrelated to any known bug) deep in the create-booking response path: before fix -> `text/plain`, `"Internal Server Error"`; after fix -> `application/json`, `{"detail":"Internal server error","code":"INTERNAL_ERROR"}`. Confirmed existing `AppError` responses (404 etc.) and FastAPI's own 422 validation responses are unaffected | nahid | Yes |
 | BUG-036 | rate-limit check lived inside `create_booking`, so FastAPI 422 body-validation failures never reached it | current BUG-036 fix commit | 20 authenticated malformed-body `POST /bookings` requests -> 20x422; next authenticated `POST /bookings` -> 429 RATE_LIMITED. Fresh control user can still create a valid booking -> 201 | Abidur | Yes |
+| BUG-038 | `RegisterRequest.password` had no `min_length`, so an empty string was accepted as a valid password | 2230548 | `POST /auth/register` with `password:""` -> 422 (was 201); `password:"12345"` (5 chars) -> 422; `password:"abc123"` (6 chars) -> 201 and logs in normally; existing smoke test's `"pw12345"` (7 chars) still passes | nahid | Yes |
+| BUG-039 | `RoomCreateRequest.capacity`/`hourly_rate_cents` had no bounds, so admins could store negative pricing | 2230548 | `POST /rooms` with `capacity:-1,hourly_rate_cents:-1` -> 422 (was 201); `hourly_rate_cents:0` (free room) still -> 201; re-ran the original repro (negative-price room -> booking -> usage-report) and confirmed the create step now fails at 422 before a negative `price_cents` or negative `revenue_cents` can ever be stored | nahid | Yes |
 
 ## Push Log
 
@@ -2214,3 +2216,148 @@ does not require the contract's mandatory claims. Later code indexes
 or malformed claims escape as `KeyError`/`ValueError` and become 500s. Because
 PyJWT does not require `exp` unless configured to do so, a signed token without
 `exp` is accepted and can authenticate.
+
+---
+
+### BUG-038 - Registration accepts an empty/blank password
+
+Status: REPORTED
+Owner: nahid
+Last updated: 2026-07-09
+Difficulty guess: Medium
+Area / workflow: auth / registration schema validation
+
+#### Reproduction
+
+```text
+1. POST /auth/register {"org_name":"x","username":"admin1","password":""}
+2. Observe 201 with a created admin account.
+3. POST /auth/login with the same org_name/username/password:"".
+4. Observe 200 with a fully valid access_token/refresh_token pair.
+```
+
+#### Expected behavior
+
+```text
+A registration request with an empty or trivially short password should be
+rejected with 422, the same way FastAPI/Pydantic rejects any other malformed
+request body. Credentials weak enough to guess (especially for the first user
+of an org, who becomes admin per Rule 15) should never be accepted.
+```
+
+#### Actual behavior before fix
+
+```text
+POST /auth/register {"password":""} -> 201 {"user_id":51,"org_id":40,"username":"admin1","role":"admin"}
+POST /auth/login    {"password":""} -> 200 {"access_token":"...","refresh_token":"...","token_type":"bearer"}
+```
+
+#### Suspected or confirmed file/line
+
+- `app/schemas.py:5-14` (`RegisterRequest`)
+
+#### Root cause
+
+`RegisterRequest.password` (and `username`/`org_name`) were declared as plain
+`str` with no `Field` constraints, so Pydantic accepted any string including
+`""`. `hash_password("")` succeeds like any other input, so an account with a
+blank password is created and can log in normally — for an org's very first
+registration this is a full admin account guessable by anyone who knows (or
+brute-forces) the org name and username.
+
+#### Fix summary
+
+```text
+app/schemas.py: RegisterRequest.org_name/username now Field(min_length=1,
+max_length=100); password now Field(min_length=6, max_length=128). 6 chars
+was chosen (not a larger minimum) specifically so the existing smoke test's
+fixture password "pw12345" (7 chars) keeps passing without being edited —
+the fix targets the concrete empty/blank-password hole, not a broader
+password-strength policy.
+```
+
+#### Verification after fix
+
+```text
+POST /auth/register password:""       -> 422 string_too_short (min_length=6)
+POST /auth/register password:"12345"  -> 422 string_too_short (5 chars)
+POST /auth/register password:"abc123" -> 201, then logs in normally -> 200
+docker compose exec api python -m pytest tests/ -> 1 passed (unchanged fixture)
+```
+
+---
+
+### BUG-039 - Room capacity and hourly rate accept negative values, corrupting revenue reports
+
+Status: REPORTED
+Owner: nahid
+Last updated: 2026-07-09
+Difficulty guess: Medium
+Area / workflow: rooms / pricing schema validation
+
+#### Reproduction
+
+```text
+1. Log in as an org admin.
+2. POST /rooms {"name":"Negative Room","capacity":-5,"hourly_rate_cents":-100000}
+3. Observe 201 — the room is created with negative capacity/rate.
+4. POST /bookings against that room for a 2-hour window.
+5. Observe price_cents:-200000 in the booking response.
+6. GET /admin/usage-report?from=...&to=... for the current range.
+7. Observe the room's revenue_cents is -200000.
+```
+
+#### Expected behavior
+
+```text
+capacity and hourly_rate_cents are physical/business quantities that can
+never be negative (a free room is the only valid zero case). Room creation
+with a negative value should be rejected with 422, the same way other
+malformed request bodies are. Admin financial reports should never show
+negative revenue from a single booking.
+```
+
+#### Actual behavior before fix
+
+```text
+POST /rooms {"capacity":-5,"hourly_rate_cents":-100000} -> 201 {"id":29,...}
+POST /bookings (2h on room 29)                           -> 201 {"price_cents":-200000,...}
+GET /admin/usage-report                                  -> {"room_id":29,...,"revenue_cents":-200000}
+```
+
+#### Suspected or confirmed file/line
+
+- `app/schemas.py:21-25` (`RoomCreateRequest`)
+- `app/models.py:36-44` (`Room` — no CHECK constraint either)
+- `app/routers/rooms.py:41-57` (`create_room` — no validation before insert)
+
+#### Root cause
+
+`RoomCreateRequest.capacity`/`hourly_rate_cents` were declared as plain `int`
+with no lower bound, and `create_room` inserts them into `Room` unchanged with
+no application-level check. Every downstream consumer (`price_cents =
+room.hourly_rate_cents * duration_hours` in `create_booking`, and
+`revenue_cents = sum(b.price_cents for b in bookings)` in the usage report)
+trusts the stored rate is non-negative and silently propagates a negative
+value all the way into an org's financial report.
+
+#### Fix summary
+
+```text
+app/schemas.py: RoomCreateRequest.name now Field(min_length=1, max_length=100);
+capacity now Field(gt=0) (a room must hold at least one person);
+hourly_rate_cents now Field(ge=0) (0 is kept legal for an intentionally free
+room; negative is rejected).
+```
+
+#### Verification after fix
+
+```text
+POST /rooms {"capacity":-1,"hourly_rate_cents":-1} -> 422 (both fields flagged)
+POST /rooms {"capacity":0,...}                     -> 422 greater_than
+POST /rooms {"capacity":2,"hourly_rate_cents":0}   -> 201 (free room still allowed)
+POST /rooms {"capacity":4,"hourly_rate_cents":1000}-> 201 (normal room unaffected)
+Re-ran the original repro end-to-end: the negative-price room can no longer be
+created, so the downstream booking/report corruption is unreachable.
+docker compose exec api python -m pytest tests/ -> 1 passed
+```
