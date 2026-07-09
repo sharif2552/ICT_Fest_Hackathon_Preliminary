@@ -50,6 +50,7 @@ raw evidence live in `bugs.md`.
 | BUG-037 | Hard | `app/auth.py:24`, `app/auth.py:92-132`, `app/auth.py:184-208` | Fixed | Malformed signed JWTs missing required claims returned 500 or authenticated instead of 401 |
 | BUG-038 | Medium | `app/schemas.py:5-14` | Fixed | Registration accepted an empty/blank password; any org's admin account could be created with password `""` |
 | BUG-039 | Medium | `app/schemas.py:21-25`, `app/models.py:36-44`, `app/routers/rooms.py:41-57` | Fixed | Room creation accepted negative capacity/hourly rate, letting a negative booking price corrupt admin revenue reports |
+| BUG-040 | Easy | `requirements.txt:6`, `README.md:23-27` | Fixed | README-documented `pytest` smoke-test workflow failed because pytest was not installed |
 
 ---
 
@@ -2614,6 +2615,56 @@ so an intentionally free room is still allowed.
 {"capacity":4,"hourly_rate_cents":1000}-> 201 (normal room unaffected)
 Re-ran the original repro end-to-end: room creation now fails at 422, so the
 downstream negative price/revenue corruption is unreachable.
+```
+
+---
+
+## BUG-040 - README-documented pytest workflow was missing pytest
+
+### File(s)/line(s)
+
+- `requirements.txt:6`
+- `README.md:23-27`
+
+### What was the bug?
+
+The repository includes `tests/test_smoke.py` and the README documents running
+the smoke test with `pytest` after `pip install -r requirements.txt`, but
+`requirements.txt` did not install pytest.
+
+### Why did it cause incorrect behavior?
+
+The documented local verification workflow failed immediately, so a judge or
+teammate following the README could not run the included smoke test from a clean
+install.
+
+### How was it reproduced?
+
+```text
+python -m pytest tests -v
+```
+
+Expected:
+
+```text
+The included smoke test runs.
+```
+
+Actual before fix:
+
+```text
+/usr/local/bin/python: No module named pytest
+```
+
+### How was it fixed?
+
+Added `pytest==8.2.2` to `requirements.txt`.
+
+### Verification after fix
+
+```text
+docker compose build api -> success, pytest installed in the image
+python -m pytest tests -v -> 1 passed, 1 warning
 ```
 
 ---

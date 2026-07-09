@@ -103,7 +103,7 @@ PUSHED
 | BUG-037 | REPORTED | Abidur | 2026-07-09 | auth / malformed JWT required claims | Hard | | Signed JWTs missing required claims are not rejected as invalid tokens: missing `jti`/`sub` or non-integer `sub` returned 500, and missing `exp` authenticated successfully with 200; fixed by requiring and validating JWT claims/lifetimes before auth dependencies use them (`app/auth.py:24`, `app/auth.py:92-132`, `app/auth.py:184-208`) |
 | BUG-038 | REPORTED | nahid | 2026-07-09 | auth / registration schema validation | Medium | 2230548 | `RegisterRequest` has no `min_length` on `password`/`username`/`org_name`; live-tested `POST /auth/register` with `password:""` -> 201, then `POST /auth/login` with the same empty password -> 200 with valid tokens, so any org's admin account can be created with a blank/guessable password (`app/schemas.py:5-14`) |
 | BUG-039 | REPORTED | nahid | 2026-07-09 | rooms / pricing schema validation | Medium | 2230548 | `RoomCreateRequest`/`Room` never validate `capacity`/`hourly_rate_cents` as non-negative; live-tested `POST /rooms` with `hourly_rate_cents:-100000` -> 201, booking it stored `price_cents:-200000`, and `GET /admin/usage-report` then showed `revenue_cents:-200000`, corrupting org financial reports (`app/schemas.py:21-25`, `app/models.py:36-44`, `app/routers/rooms.py:41-57`) |
-| BUG-040 | ROOT_CAUSED | Abidur | 2026-07-09 | documented test workflow / missing dependency | Easy | | README says `pip install -r requirements.txt` then `pytest`, but the built image lacks pytest and `python -m pytest tests -v` fails with `No module named pytest` (`requirements.txt`, `README.md:16-25`) |
+| BUG-040 | REPORTED | Abidur | 2026-07-09 | documented test workflow / missing dependency | Easy | | README says `pip install -r requirements.txt` then `pytest`, but the built image lacked pytest and `python -m pytest tests -v` failed with `No module named pytest`; fixed by adding a pinned pytest dependency (`requirements.txt:6`, `README.md:23-27`) |
 
 ## Confirmed Fixes
 
@@ -148,6 +148,7 @@ PUSHED
 | BUG-037 | JWT decode did not require the contract's mandatory claims and later auth code indexed missing/malformed claims directly | current BUG-037 fix commit | Signed tokens missing `jti`, `sub`, or `exp`, plus a token with non-integer `sub`, all return 401 UNAUTHORIZED. Full API and concurrency audits still pass | Abidur | Yes |
 | BUG-038 | `RegisterRequest.password` had no `min_length`, so an empty string was accepted as a valid password | 2230548 | `POST /auth/register` with `password:""` -> 422 (was 201); `password:"12345"` (5 chars) -> 422; `password:"abc123"` (6 chars) -> 201 and logs in normally; existing smoke test's `"pw12345"` (7 chars) still passes | nahid | Yes |
 | BUG-039 | `RoomCreateRequest.capacity`/`hourly_rate_cents` had no bounds, so admins could store negative pricing | 2230548 | `POST /rooms` with `capacity:-1,hourly_rate_cents:-1` -> 422 (was 201); `hourly_rate_cents:0` (free room) still -> 201; re-ran the original repro (negative-price room -> booking -> usage-report) and confirmed the create step now fails at 422 before a negative `price_cents` or negative `revenue_cents` can ever be stored | nahid | Yes |
+| BUG-040 | `requirements.txt` omitted the README-documented pytest runner | current BUG-040 fix commit | Rebuilt image after adding `pytest==8.2.2`; `python -m pytest tests -v` -> 1 passed, 1 warning | Abidur | Yes |
 
 ## Push Log
 
@@ -2393,7 +2394,7 @@ docker compose exec api python -m pytest tests/ -> 1 passed
 
 ### BUG-040 - README-documented pytest workflow is missing pytest
 
-Status: ROOT_CAUSED
+Status: REPORTED
 Owner: Abidur
 Last updated: 2026-07-09
 Difficulty guess: Easy
@@ -2423,13 +2424,25 @@ requirements step.
 /usr/local/bin/python: No module named pytest
 ```
 
-#### Suspected or confirmed file/line
+#### File(s)/line(s)
 
-- `requirements.txt`
-- `README.md:16-25`
+- `requirements.txt:6`
+- `README.md:23-27`
 
 #### Root cause
 
 The repository includes `tests/test_smoke.py` and documents `pytest` as the
 local smoke-test command, but `requirements.txt` only installs runtime
 dependencies and omits the test runner.
+
+#### Fix summary
+
+Added a pinned `pytest==8.2.2` entry to `requirements.txt`, keeping the README's
+documented install command sufficient for running the included smoke test.
+
+#### Verification after fix
+
+```text
+docker compose build api -> success, pytest installed in the image
+python -m pytest tests -v -> 1 passed, 1 warning
+```
