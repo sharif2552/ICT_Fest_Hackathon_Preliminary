@@ -90,7 +90,7 @@ PUSHED
 | BUG-024 | REPORTED | Sadik | 2026-07-09 | room availability / cache freshness | Medium | | Cached availability stays stale after booking cancel (`app/routers/bookings.py:228-230`, `app/cache.py`) |
 | BUG-025 | REPORTED | Sadik | 2026-07-09 | admin export / room_id tenancy error handling | Hard | | Unknown/cross-org `room_id` returns 200 empty CSV instead of 404 (`app/routers/admin.py:65-73`, `app/services/export.py`) |
 | BUG-026 | REPORTED | Abidur | 2026-07-09 | admin usage-report / room creation cache freshness | Medium | | Cached usage report omits rooms created after the report was cached (`app/routers/rooms.py:42-58`, `app/cache.py`) |
-| BUG-027 | CLAIMED | Sadik | 2026-07-09 | room stats / persistence after restart | Medium | | Suspected in-memory stats reset while bookings persist (`app/routers/rooms.py`, `app/services/stats.py`) |
+| BUG-027 | ROOT_CAUSED | Sadik | 2026-07-09 | room stats / persistence after restart | Medium | | Restarted process returns stats 0/0 for persisted confirmed booking (`app/routers/rooms.py:92-103`, `app/services/stats.py`) |
 
 ## Confirmed Fixes
 
@@ -1416,6 +1416,42 @@ The second report returns the cached response and omits the newly created room.
 `create_room` inserts a new room but never invalidates the org usage-report cache,
 even though Rule 12 requires usage reports to include rooms with zero bookings and
 reflect the current state immediately.
+
+---
+
+### BUG-027 - Room stats reset after service restart
+
+Status: ROOT_CAUSED
+Owner: Sadik
+Last updated: 2026-07-09
+Difficulty guess: Medium
+Area / workflow: room stats / persistence after restart
+
+#### Reproduction
+
+```text
+Process 1 creates a confirmed 3000-cent booking and reads /rooms/{id}/stats.
+Process 2 starts fresh against the same SQLite DB and reads /rooms/{id}/stats.
+```
+
+#### Expected behavior
+
+```text
+Both processes return total_confirmed_bookings == 1 and total_revenue_cents == 3000.
+```
+
+#### Actual behavior before fix
+
+```text
+Process 1 stats: {"total_confirmed_bookings": 1, "total_revenue_cents": 3000}
+Process 2 stats after restart: {"total_confirmed_bookings": 0, "total_revenue_cents": 0}
+```
+
+#### Root cause
+
+`room_stats` reads only the in-memory `services.stats` aggregate. The SQLite
+booking rows persist across process restarts, but `_stats` resets to `{}`, so
+the endpoint no longer equals the values derivable from the bookings table.
 
 #### Fix summary
 
