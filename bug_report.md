@@ -37,6 +37,7 @@ raw evidence live in `bugs.md`.
 | BUG-024 | Medium | `app/routers/bookings.py:228-230` | Fixed | Availability cache not invalidated when a booking is cancelled |
 | BUG-025 | Hard | `app/routers/admin.py:65-73` | Fixed | Export returned 200 empty CSV instead of 404 for unknown/cross-org room_id |
 | BUG-026 | Medium | `app/routers/rooms.py:42-58` | Fixed | Usage-report cache not invalidated when a room is created |
+| BUG-027 | Hard | `app/routers/rooms.py:103-119` | Fixed | Room stats returned 0/0 after restart because they read only in-memory counters |
 
 ---
 
@@ -1666,6 +1667,76 @@ Result:
 ```text
 rooms in report before creating a room: 0
 rooms in report after creating a room: 1
+```
+
+---
+
+## BUG-027 - Room stats were lost after API restart
+
+### File(s)/line(s)
+
+- `app/routers/rooms.py:103-119`
+- `app/services/stats.py`
+
+### What was the bug?
+
+`GET /rooms/{id}/stats` read the room totals from `services.stats.get(room.id)`,
+which is backed only by the process-local `_stats` dictionary.
+
+### Why did it cause incorrect behavior?
+
+The SQLite database persists bookings across API restarts, but `_stats` resets
+to `{}` when the process starts. After restart, a room with persisted confirmed
+bookings could report:
+
+```text
+{"total_confirmed_bookings": 0, "total_revenue_cents": 0}
+```
+
+Rule 14 requires room stats to always equal the values derivable from confirmed
+bookings.
+
+### How was it reproduced?
+
+```text
+Create a confirmed 3000-cent booking, clear/restart the in-memory stats state,
+then call GET /rooms/{id}/stats against the same persisted booking data.
+```
+
+Expected:
+
+```text
+total_confirmed_bookings == 1
+total_revenue_cents == 3000
+```
+
+Actual before fix:
+
+```text
+total_confirmed_bookings == 0
+total_revenue_cents == 0
+```
+
+### How was it fixed?
+
+The stats endpoint now queries persisted confirmed bookings for the room and
+computes the count and revenue from the database at request time.
+
+### Verification after fix
+
+```bash
+docker run --rm -v "$PWD:/app" -w /app \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e DATABASE_URL=sqlite:////tmp/bug027_stats.db \
+  -e JWT_SECRET=bug027-verify \
+  ict_fest_hackathon_preliminary-api:latest \
+  python -c "<create persisted booking; clear stats._stats; call room_stats>"
+```
+
+Result:
+
+```text
+{'room_id': 1, 'total_confirmed_bookings': 1, 'total_revenue_cents': 3000}
 ```
 
 ---

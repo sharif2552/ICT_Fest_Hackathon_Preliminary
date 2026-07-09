@@ -90,7 +90,7 @@ PUSHED
 | BUG-024 | REPORTED | Abidur | 2026-07-09 | room availability / cache freshness | Medium | | Cached availability stays stale after booking cancel (`app/routers/bookings.py:228-230`, `app/cache.py`) |
 | BUG-025 | REPORTED | Abidur | 2026-07-09 | admin export / room_id tenancy error handling | Hard | | Unknown/cross-org `room_id` returns 200 empty CSV instead of 404 (`app/routers/admin.py:65-73`, `app/services/export.py`) |
 | BUG-026 | REPORTED | Abidur | 2026-07-09 | admin usage-report / room creation cache freshness | Medium | | Cached usage report omits rooms created after the report was cached (`app/routers/rooms.py:42-58`, `app/cache.py`) |
-| BUG-027 | ROOT_CAUSED | Abidur | 2026-07-09 | room stats / restart persistence | Hard | | Restarted process returns stats 0/0 for persisted confirmed booking because stats live only in memory (`app/routers/rooms.py:92-103`, `app/services/stats.py`) |
+| BUG-027 | REPORTED | Abidur | 2026-07-09 | room stats / restart persistence | Hard | | Restarted process returns stats 0/0 for persisted confirmed booking because stats live only in memory (`app/routers/rooms.py:103-119`, `app/services/stats.py`) |
 
 ## Confirmed Fixes
 
@@ -122,6 +122,7 @@ PUSHED
 | BUG-024 | cancel_booking never invalidated the room/date availability cache | a31308e | Busy interval removed immediately after cancel | nahid | Yes |
 | BUG-025 | export() never validated room_id against caller's org before querying | a31308e | Cross-org/unknown room_id -> 404 ROOM_NOT_FOUND | nahid | Yes |
 | BUG-026 | create_room never invalidated the org usage-report cache | 43c37ce | New room appears in a previously-cached report immediately | nahid | Yes |
+| BUG-027 | stats endpoint read only process-local `_stats` instead of persisted bookings | current BUG-027 fix commit | Cleared `_stats` with persisted booking -> stats returns 1 / 3000 | Abidur | Yes |
 
 ## Push Log
 
@@ -1421,7 +1422,7 @@ reflect the current state immediately.
 
 ### BUG-027 - Room stats are lost after API restart
 
-Status: ROOT_CAUSED
+Status: REPORTED
 Owner: Abidur
 Last updated: 2026-07-09
 Difficulty guess: Hard
@@ -1449,7 +1450,7 @@ Process 2 stats after restart: {"total_confirmed_bookings": 0, "total_revenue_ce
 
 #### Suspected or confirmed file/line
 
-- `app/routers/rooms.py:92-103`
+- `app/routers/rooms.py:103-119`
 - `app/services/stats.py`
 
 #### Root cause
@@ -1457,3 +1458,26 @@ Process 2 stats after restart: {"total_confirmed_bookings": 0, "total_revenue_ce
 `room_stats` reads only the in-memory `services.stats` aggregate. The SQLite
 booking rows persist across process restarts, but `_stats` resets to `{}`, so
 the endpoint no longer equals the values derivable from the bookings table.
+
+#### Fix summary
+
+`GET /rooms/{id}/stats` now derives `total_confirmed_bookings` and
+`total_revenue_cents` directly from persisted confirmed `Booking` rows for the
+room. The endpoint no longer depends on the process-local stats cache.
+
+#### Verification after fix
+
+```bash
+docker run --rm -v "$PWD:/app" -w /app \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e DATABASE_URL=sqlite:////tmp/bug027_stats.db \
+  -e JWT_SECRET=bug027-verify \
+  ict_fest_hackathon_preliminary-api:latest \
+  python -c "<create persisted booking; clear stats._stats; call room_stats>"
+```
+
+Result:
+
+```text
+{'room_id': 1, 'total_confirmed_bookings': 1, 'total_revenue_cents': 3000}
+```
