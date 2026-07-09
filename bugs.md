@@ -83,6 +83,7 @@ PUSHED
 | BUG-017 | REPORTED | nahid | 2026-07-09 | reference codes / concurrency | Hard | | `app/services/reference.py:17-21` |
 | BUG-018 | REPORTED | nahid | 2026-07-09 | rate limit / concurrency | Medium | | `app/services/ratelimit.py:18-26` |
 | BUG-019 | REPORTED | nahid | 2026-07-09 | room stats / concurrency | Medium | | `app/services/stats.py:15-26` |
+| BUG-020 | CLAIMED | codex | 2026-07-09 | bookings / same-org member visibility | Hard | | Suspected missing owner check in `GET /bookings/{id}` (`app/routers/bookings.py`) |
 
 ## Confirmed Fixes
 
