@@ -70,13 +70,13 @@ PUSHED
 | BUG-004 | VERIFIED | nahid | 2026-07-09 | auth / logout revocation | Medium | | `app/auth.py:85-98` |
 | BUG-005 | VERIFIED | nahid | 2026-07-09 | auth / refresh token reuse | Medium | | `app/routers/auth.py:81-93` |
 | BUG-006 | VERIFIED | nahid | 2026-07-09 | auth / registration | Medium | | `app/routers/auth.py:32-43` |
-| BUG-007 | ROOT_CAUSED | nahid | 2026-07-09 | bookings / create validation | Medium | | `app/routers/bookings.py:86` |
-| BUG-008 | ROOT_CAUSED | nahid | 2026-07-09 | bookings / create validation | Medium | | `app/routers/bookings.py:89-94` |
-| BUG-009 | ROOT_CAUSED | nahid | 2026-07-09 | bookings / conflict check | Medium | | `app/routers/bookings.py:50` |
+| BUG-007 | VERIFIED | nahid | 2026-07-09 | bookings / create validation | Medium | | `app/routers/bookings.py:86` |
+| BUG-008 | VERIFIED | nahid | 2026-07-09 | bookings / create validation | Medium | | `app/routers/bookings.py:89-94` |
+| BUG-009 | VERIFIED | nahid | 2026-07-09 | bookings / conflict check | Medium | | `app/routers/bookings.py:50` |
 | BUG-010 | ROOT_CAUSED | nahid | 2026-07-09 | bookings / cancel refund | Medium | | `app/routers/bookings.py:198-208` |
 | BUG-011 | ROOT_CAUSED | nahid | 2026-07-09 | bookings / get detail | Easy | | `app/routers/bookings.py:166` |
 | BUG-012 | ROOT_CAUSED | nahid | 2026-07-09 | bookings / list pagination | Medium | | `app/routers/bookings.py:137-139` |
-| BUG-013 | ROOT_CAUSED | nahid | 2026-07-09 | timeutils / UTC conversion | Hard | | `app/timeutils.py:11-14` |
+| BUG-013 | VERIFIED | nahid | 2026-07-09 | timeutils / UTC conversion | Hard | | `app/timeutils.py:11-14` |
 | BUG-014 | ROOT_CAUSED | nahid | 2026-07-09 | bookings / concurrency | Hard | | `app/routers/bookings.py:42-52` |
 | BUG-015 | ROOT_CAUSED | nahid | 2026-07-09 | bookings / concurrency | Hard | | `app/routers/bookings.py:55-71` |
 | BUG-016 | ROOT_CAUSED | nahid | 2026-07-09 | bookings / concurrency | Hard | | `app/routers/bookings.py:178-225` |
@@ -424,7 +424,7 @@ Raise `AppError(409, "USERNAME_TAKEN", ...)` when a user with that username alre
 
 ### BUG-007 - Booking start_time validation allows times already in the past
 
-Status: ROOT_CAUSED
+Status: VERIFIED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Medium
@@ -469,7 +469,7 @@ Reject whenever `start <= now`.
 
 ### BUG-008 - Missing minimum-duration / end-after-start validation
 
-Status: ROOT_CAUSED
+Status: VERIFIED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Medium
@@ -515,7 +515,7 @@ Add `if duration_hours < MIN_DURATION_HOURS: raise AppError(400, "INVALID_BOOKIN
 
 ### BUG-009 - Room conflict check rejects valid back-to-back bookings
 
-Status: ROOT_CAUSED
+Status: VERIFIED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Medium
@@ -721,7 +721,7 @@ items = (
 
 ### BUG-013 - parse_input_datetime does not convert non-UTC offsets to UTC
 
-Status: ROOT_CAUSED
+Status: VERIFIED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Hard
