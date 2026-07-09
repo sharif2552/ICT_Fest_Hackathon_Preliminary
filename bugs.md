@@ -91,6 +91,7 @@ PUSHED
 | BUG-025 | REPORTED | Abidur | 2026-07-09 | admin export / room_id tenancy error handling | Hard | | Unknown/cross-org `room_id` returns 200 empty CSV instead of 404 (`app/routers/admin.py:65-73`, `app/services/export.py`) |
 | BUG-026 | REPORTED | Abidur | 2026-07-09 | admin usage-report / room creation cache freshness | Medium | | Cached usage report omits rooms created after the report was cached (`app/routers/rooms.py:42-58`, `app/cache.py`) |
 | BUG-027 | REPORTED | Abidur | 2026-07-09 | room stats / restart persistence | Hard | | Restarted process returns stats 0/0 for persisted confirmed booking because stats live only in memory (`app/routers/rooms.py:103-119`, `app/services/stats.py`) |
+| BUG-028 | CLAIMED | Abidur | 2026-07-09 | reference codes / persistence after restart | Hard | | Suspected duplicate `reference_code` after restart because counter is process-local (`app/services/reference.py`, `app/routers/bookings.py`) |
 
 ## Confirmed Fixes
 
