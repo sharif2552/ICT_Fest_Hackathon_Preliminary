@@ -46,6 +46,7 @@ raw evidence live in `bugs.md`.
 | BUG-033 | Hard | `app/services/refunds.py:14-28`, `app/routers/bookings.py:226-231` | Fixed | Refund-log and booking-status-update commits were not atomic; a crash between them let a retry double-log a refund |
 | BUG-034 | Medium | `app/services/ratelimit.py`, `app/models.py:81-86` | Fixed | Booking rate-limit window lived only in memory and silently reset on every API restart |
 | BUG-035 | Medium | `app/main.py`, `app/errors.py` | Fixed | No catch-all exception handler; any uncaught non-`AppError` exception returned a malformed non-JSON 500 |
+| BUG-036 | Medium | `app/main.py:20-32`, `app/auth.py:146-159`, `app/routers/bookings.py:85-91` | Fixed | Malformed-body `POST /bookings` requests bypassed the documented per-user rate limit |
 
 ---
 
@@ -2353,6 +2354,75 @@ Regression checks:
   GET /bookings/999999 -> 404 {"detail":"Booking not found","code":"BOOKING_NOT_FOUND"}
   POST /auth/register with a malformed body -> 422, FastAPI's normal
     validation-error shape, unaffected
+```
+
+---
+
+## BUG-036 - Malformed booking-create requests bypassed rate limiting
+
+### File(s)/line(s)
+
+- `app/main.py:20-32`
+- `app/auth.py:146-159`
+- `app/routers/bookings.py:85-91`
+- `app/services/ratelimit.py`
+
+### What was the bug?
+
+The `POST /bookings` rate-limit check lived inside `create_booking`, after
+FastAPI had already validated the `BookingCreateRequest` body.
+
+### Why did it cause incorrect behavior?
+
+Rule 5 says `POST /bookings` is limited to 20 requests per rolling 60 seconds
+per user and that all requests count, successful or not. Requests with a
+malformed body are rejected by FastAPI with 422 before the endpoint function is
+entered, so those authenticated booking attempts never reached
+`ratelimit.record_and_check`.
+
+### How was it reproduced?
+
+```text
+Send 20 authenticated POST /bookings requests missing the required end_time
+field, then send a well-formed POST /bookings request for a non-existent room.
+```
+
+Expected:
+
+```text
+The 21st authenticated booking-create request should be rejected with
+429 RATE_LIMITED because the previous 20 malformed booking-create requests
+already consumed the user's rolling window.
+```
+
+Actual before fix:
+
+```text
+First 20 requests: 422 x 20
+21st request: 404 ROOM_NOT_FOUND
+```
+
+### How was it fixed?
+
+Added a narrow `POST /bookings` middleware in `app/main.py` that runs before
+FastAPI body validation. It uses the shared bearer-token helper from `auth.py`
+to authenticate the caller, resolves the current user, and records the booking
+rate-limit event before the request reaches the router. The endpoint-local
+rate-limit call was removed so valid requests are still counted exactly once.
+
+### Verification after fix
+
+```text
+20 authenticated malformed-body POST /bookings requests:
+  statuses: 422 x 20
+
+Next authenticated POST /bookings in the same 60-second window:
+  status: 429
+  body: {"detail":"Too many booking requests","code":"RATE_LIMITED"}
+
+Control flow with a fresh user:
+  POST /rooms -> 201
+  valid POST /bookings -> 201
 ```
 
 ---

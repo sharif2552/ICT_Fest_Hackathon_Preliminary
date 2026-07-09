@@ -13,7 +13,7 @@ from ..errors import AppError
 from ..models import Booking, Room, User
 from ..schemas import BookingCreateRequest
 from ..serializers import serialize_booking
-from ..services import notifications, ratelimit, reference, stats
+from ..services import notifications, reference, stats
 from ..services.refunds import log_refund
 from ..timeutils import iso_utc, parse_input_datetime
 
@@ -88,8 +88,6 @@ def create_booking(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    ratelimit.record_and_check(user.id, db)
-
     try:
         start = parse_input_datetime(payload.start_time)
         end = parse_input_datetime(payload.end_time)

@@ -143,8 +143,7 @@ def consume_refresh_token(payload: dict, db: Session) -> None:
         _persist_invalidation(db, payload)
 
 
-def get_token_payload(request: Request, db: Session = Depends(get_db)) -> dict:
-    header = request.headers.get("Authorization")
+def token_payload_from_header(header: str | None, db: Session) -> dict:
     if not header or not header.startswith("Bearer "):
         raise AppError(401, "UNAUTHORIZED", "Missing bearer token")
     token = header[len("Bearer "):].strip()
@@ -154,6 +153,10 @@ def get_token_payload(request: Request, db: Session = Depends(get_db)) -> dict:
     if payload.get("jti") in _revoked_tokens or _is_invalidated(db, payload):
         raise AppError(401, "UNAUTHORIZED", "Token has been revoked")
     return payload
+
+
+def get_token_payload(request: Request, db: Session = Depends(get_db)) -> dict:
+    return token_payload_from_header(request.headers.get("Authorization"), db)
 
 
 def get_current_user(

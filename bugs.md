@@ -99,7 +99,7 @@ PUSHED
 | BUG-033 | REPORTED | nahid | 2026-07-09 | cancellation / refund-log and status-update atomicity | Hard | 7977e72 | `log_refund()` commits independently of the booking status-update commit in `cancel_booking`; a crash/failure between the two commits leaves a durable refund with `status` still `confirmed`, so a client retry re-enters `log_refund` and logs a second, unguarded duplicate refund; fixed by making `log_refund` flush (not commit) so the caller's single commit covers both writes atomically (`app/services/refunds.py:14-28`, `app/routers/bookings.py:226-231`) |
 | BUG-034 | REPORTED | nahid | 2026-07-09 | booking rate limit / restart persistence | Medium | 8a8c01e | Rate-limit buckets lived only in a process-local dict (`_buckets`); an API restart silently reset every user's 20-req/60s window, same in-memory-state-lost-on-restart class as BUG-027/028/029; fixed with a persisted `RateLimitEvent` table (`app/services/ratelimit.py`, `app/models.py:81-86`) |
 | BUG-035 | REPORTED | nahid | 2026-07-09 | error handling / missing catch-all exception handler | Medium | 0a0b8a6 | `app/main.py` only registered a handler for `AppError`; any other uncaught exception (the exact root symptom behind BUG-030/031/032/033, each patched locally) fell through to Starlette's default handler and returned a raw `text/plain` 500, violating the documented `{"detail","code"}` JSON contract. Reproduced live with a generic `ZeroDivisionError` unrelated to any known bug; fixed with a global `Exception` handler (`app/main.py`, `app/errors.py`) |
-| BUG-036 | ROOT_CAUSED | Abidur | 2026-07-09 | booking rate limit / framework validation requests | Medium | | Authenticated `POST /bookings` requests that fail FastAPI body validation did not count toward the documented 20-requests/60s rate limit; after 20x422, the next request returned 404 instead of 429 because rate limiting ran inside `create_booking` after body validation (`app/routers/bookings.py:85-91`) |
+| BUG-036 | REPORTED | Abidur | 2026-07-09 | booking rate limit / framework validation requests | Medium | | Authenticated `POST /bookings` requests that fail FastAPI body validation did not count toward the documented 20-requests/60s rate limit; fixed by moving the per-user booking rate limit into middleware that runs before body validation and removing the endpoint-local duplicate check (`app/main.py:20-32`, `app/auth.py:146-159`, `app/routers/bookings.py:85-91`) |
 
 ## Confirmed Fixes
 
@@ -140,6 +140,7 @@ PUSHED
 | BUG-033 | `log_refund()` committed independently of the caller's booking-status-update commit, so a crash between the two commits left a durable refund against a still-`confirmed` booking, letting a retry double-log the refund | current BUG-033 fix commit | Monkeypatched `Session.commit` to fail on the status-update commit; crash left 0 refund rows + `confirmed` status (was 1 refund row + `confirmed` before the fix); retry then produced exactly 1 refund row + `cancelled` status | nahid | Yes |
 | BUG-034 | rate-limit window lived only in a process-local dict, reset on every restart | current BUG-034 fix commit | Consumed 15/20 slots, restarted the container, confirmed 15 `RateLimitEvent` rows survived; 5 more requests succeeded and the 6th was correctly rejected (429). 30-thread concurrency test still produced exactly 20 ok / 10 rejected (BUG-018 guarantee preserved) | nahid | Yes |
 | BUG-035 | `app/main.py` registered a handler only for `AppError`; every other exception type fell through to Starlette's default plain-text 500 | current BUG-035 fix commit | Forced a generic `ZeroDivisionError` (unrelated to any known bug) deep in the create-booking response path: before fix -> `text/plain`, `"Internal Server Error"`; after fix -> `application/json`, `{"detail":"Internal server error","code":"INTERNAL_ERROR"}`. Confirmed existing `AppError` responses (404 etc.) and FastAPI's own 422 validation responses are unaffected | nahid | Yes |
+| BUG-036 | rate-limit check lived inside `create_booking`, so FastAPI 422 body-validation failures never reached it | current BUG-036 fix commit | 20 authenticated malformed-body `POST /bookings` requests -> 20x422; next authenticated `POST /bookings` -> 429 RATE_LIMITED. Fresh control user can still create a valid booking -> 201 | Abidur | Yes |
 
 ## Push Log
 
@@ -2094,7 +2095,7 @@ Regression checks:
 
 ### BUG-036 - Framework-validation booking requests may not count toward rate limit
 
-Status: ROOT_CAUSED
+Status: REPORTED
 Owner: Abidur
 Last updated: 2026-07-09
 Difficulty guess: Medium
@@ -2124,8 +2125,10 @@ First 20 requests: 422 x 20
 21st request: 404 ROOM_NOT_FOUND
 ```
 
-#### Suspected or confirmed file/line
+#### File(s)/line(s)
 
+- `app/main.py:20-32`
+- `app/auth.py:146-159`
 - `app/routers/bookings.py:85-91`
 - `app/services/ratelimit.py`
 
@@ -2136,3 +2139,26 @@ FastAPI validates the `BookingCreateRequest` payload before entering the endpoin
 function. Requests rejected during framework body validation therefore never
 reach the rate-limit call, even though Rule 5 says all POST /bookings requests
 count, successful or not.
+
+#### Fix summary
+
+Moved the booking-create rate limit into a narrow `POST /bookings` middleware
+that runs before FastAPI body validation. The middleware authenticates the
+caller through the same bearer-token path, resolves the current user, and calls
+`ratelimit.record_and_check` once before the request proceeds. The endpoint-local
+rate-limit call was removed so valid booking requests are not counted twice.
+
+#### Verification after fix
+
+```text
+20 authenticated malformed-body POST /bookings requests:
+  statuses: 422 x 20
+
+Next authenticated POST /bookings in the same 60-second window:
+  status: 429
+  body: {"detail":"Too many booking requests","code":"RATE_LIMITED"}
+
+Control flow with a fresh user:
+  POST /rooms -> 201
+  valid POST /bookings -> 201
+```
