@@ -66,7 +66,7 @@ PUSHED
 |---|---|---|---|---|---|---|---|
 | BUG-001 | VERIFIED | nahid | 2026-07-09 | auth / access token lifetime | Medium | | `app/auth.py:50` |
 | BUG-002 | VERIFIED | nahid | 2026-07-09 | auth / JWT secret config | Medium | | `app/config.py:8`, `docker-compose.yml:6` |
-| BUG-003 | ROOT_CAUSED | nahid | 2026-07-09 | admin export / multi-tenancy | Hard | | `app/services/export.py:22-50` |
+| BUG-003 | VERIFIED | nahid | 2026-07-09 | admin export / multi-tenancy | Hard | | `app/services/export.py:22-50` |
 | BUG-004 | VERIFIED | nahid | 2026-07-09 | auth / logout revocation | Medium | | `app/auth.py:85-98` |
 | BUG-005 | ROOT_CAUSED | nahid | 2026-07-09 | auth / refresh token reuse | Medium | | `app/routers/auth.py:81-93` |
 | BUG-006 | ROOT_CAUSED | nahid | 2026-07-09 | auth / registration | Medium | | `app/routers/auth.py:32-43` |
@@ -227,7 +227,7 @@ Require `JWT_SECRET` from the environment with no insecure default (fail fast if
 
 ### BUG-003 - Cross-tenant IDOR in GET /admin/export
 
-Status: ROOT_CAUSED
+Status: VERIFIED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Hard
