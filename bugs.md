@@ -83,14 +83,14 @@ PUSHED
 | BUG-017 | REPORTED | nahid | 2026-07-09 | reference codes / concurrency | Hard | | `app/services/reference.py:17-21` |
 | BUG-018 | REPORTED | nahid | 2026-07-09 | rate limit / concurrency | Medium | | `app/services/ratelimit.py:18-26` |
 | BUG-019 | REPORTED | nahid | 2026-07-09 | room stats / concurrency | Medium | | `app/services/stats.py:15-26` |
-| BUG-020 | REPORTED | Sadik | 2026-07-09 | bookings / same-org member visibility | Hard | | Same-org member can read another member's booking via `GET /bookings/{id}` (`app/routers/bookings.py:168-186`) |
-| BUG-021 | REPORTED | Sadik | 2026-07-09 | cancellation / refund rounding | Medium | | 50% of 1001 cents returns/stores 500, not required 501 (`app/routers/bookings.py:220`, `app/services/refunds.py:14-18`) |
-| BUG-022 | REPORTED | Sadik | 2026-07-09 | notifications / liveness | Hard | | Opposite lock order deadlocks concurrent create/cancel notifications (`app/services/notifications.py:24-35`) |
-| BUG-023 | REPORTED | Sadik | 2026-07-09 | admin usage-report / cache freshness | Medium | | Cached usage report stays stale after booking create (`app/routers/bookings.py:132-134`, `app/cache.py`) |
-| BUG-024 | REPORTED | Sadik | 2026-07-09 | room availability / cache freshness | Medium | | Cached availability stays stale after booking cancel (`app/routers/bookings.py:228-230`, `app/cache.py`) |
-| BUG-025 | REPORTED | Sadik | 2026-07-09 | admin export / room_id tenancy error handling | Hard | | Unknown/cross-org `room_id` returns 200 empty CSV instead of 404 (`app/routers/admin.py:65-73`, `app/services/export.py`) |
+| BUG-020 | REPORTED | Abidur | 2026-07-09 | bookings / same-org member visibility | Hard | | Same-org member can read another member's booking via `GET /bookings/{id}` (`app/routers/bookings.py:168-186`) |
+| BUG-021 | REPORTED | Abidur | 2026-07-09 | cancellation / refund rounding | Medium | | 50% of 1001 cents returns/stores 500, not required 501 (`app/routers/bookings.py:220`, `app/services/refunds.py:14-18`) |
+| BUG-022 | REPORTED | Abidur | 2026-07-09 | notifications / liveness | Hard | | Opposite lock order deadlocks concurrent create/cancel notifications (`app/services/notifications.py:24-35`) |
+| BUG-023 | REPORTED | Abidur | 2026-07-09 | admin usage-report / cache freshness | Medium | | Cached usage report stays stale after booking create (`app/routers/bookings.py:132-134`, `app/cache.py`) |
+| BUG-024 | REPORTED | Abidur | 2026-07-09 | room availability / cache freshness | Medium | | Cached availability stays stale after booking cancel (`app/routers/bookings.py:228-230`, `app/cache.py`) |
+| BUG-025 | REPORTED | Abidur | 2026-07-09 | admin export / room_id tenancy error handling | Hard | | Unknown/cross-org `room_id` returns 200 empty CSV instead of 404 (`app/routers/admin.py:65-73`, `app/services/export.py`) |
 | BUG-026 | REPORTED | Abidur | 2026-07-09 | admin usage-report / room creation cache freshness | Medium | | Cached usage report omits rooms created after the report was cached (`app/routers/rooms.py:42-58`, `app/cache.py`) |
-| BUG-027 | ROOT_CAUSED | Sadik | 2026-07-09 | room stats / persistence after restart | Medium | | Restarted process returns stats 0/0 for persisted confirmed booking (`app/routers/rooms.py:92-103`, `app/services/stats.py`) |
+| BUG-027 | ROOT_CAUSED | Abidur | 2026-07-09 | room stats / restart persistence | Hard | | Restarted process returns stats 0/0 for persisted confirmed booking because stats live only in memory (`app/routers/rooms.py:92-103`, `app/services/stats.py`) |
 
 ## Confirmed Fixes
 
@@ -121,7 +121,7 @@ PUSHED
 | BUG-023 | create_booking never invalidated the org usage-report cache | a31308e | Report count increments immediately after a new booking | nahid | Yes |
 | BUG-024 | cancel_booking never invalidated the room/date availability cache | a31308e | Busy interval removed immediately after cancel | nahid | Yes |
 | BUG-025 | export() never validated room_id against caller's org before querying | a31308e | Cross-org/unknown room_id -> 404 ROOM_NOT_FOUND | nahid | Yes |
-| BUG-026 | create_room never invalidated the org usage-report cache | (pending push) | New room appears in a previously-cached report immediately | nahid | Yes |
+| BUG-026 | create_room never invalidated the org usage-report cache | 43c37ce | New room appears in a previously-cached report immediately | nahid | Yes |
 
 ## Push Log
 
@@ -1097,7 +1097,7 @@ Guard both functions with a `threading.Lock`, matching the pattern already used 
 ### BUG-020 - Same-org members can read each other's booking details
 
 Status: REPORTED
-Owner: Sadik
+Owner: Abidur
 Last updated: 2026-07-09
 Difficulty guess: Hard
 Area / workflow: bookings / same-org member visibility
@@ -1146,7 +1146,7 @@ Behavior now matches the documented rule.
 ### BUG-021 - Refund half-cent rounding truncates instead of rounding up
 
 Status: REPORTED
-Owner: Sadik
+Owner: Abidur
 Last updated: 2026-07-09
 Difficulty guess: Medium
 Area / workflow: cancellation / refund rounding
@@ -1194,7 +1194,7 @@ Behavior now matches the documented rule.
 ### BUG-022 - Opposite notification lock order can deadlock
 
 Status: REPORTED
-Owner: Sadik
+Owner: Abidur
 Last updated: 2026-07-09
 Difficulty guess: Hard
 Area / workflow: notifications / liveness
@@ -1242,7 +1242,7 @@ Behavior now matches the documented rule.
 ### BUG-023 - Usage report cache is not invalidated after booking create
 
 Status: REPORTED
-Owner: Sadik
+Owner: Abidur
 Last updated: 2026-07-09
 Difficulty guess: Medium
 Area / workflow: admin usage-report / cache freshness
@@ -1290,7 +1290,7 @@ Behavior now matches the documented rule.
 ### BUG-024 - Availability cache is not invalidated after booking cancel
 
 Status: REPORTED
-Owner: Sadik
+Owner: Abidur
 Last updated: 2026-07-09
 Difficulty guess: Medium
 Area / workflow: room availability / cache freshness
@@ -1338,7 +1338,7 @@ Behavior now matches the documented rule.
 ### BUG-025 - Admin export returns 200 for unknown or cross-org room_id
 
 Status: REPORTED
-Owner: Sadik
+Owner: Abidur
 Last updated: 2026-07-09
 Difficulty guess: Hard
 Area / workflow: admin export / room_id tenancy error handling
@@ -1419,13 +1419,13 @@ reflect the current state immediately.
 
 ---
 
-### BUG-027 - Room stats reset after service restart
+### BUG-027 - Room stats are lost after API restart
 
 Status: ROOT_CAUSED
-Owner: Sadik
+Owner: Abidur
 Last updated: 2026-07-09
-Difficulty guess: Medium
-Area / workflow: room stats / persistence after restart
+Difficulty guess: Hard
+Area / workflow: room stats / restart persistence
 
 #### Reproduction
 
@@ -1447,24 +1447,13 @@ Process 1 stats: {"total_confirmed_bookings": 1, "total_revenue_cents": 3000}
 Process 2 stats after restart: {"total_confirmed_bookings": 0, "total_revenue_cents": 0}
 ```
 
+#### Suspected or confirmed file/line
+
+- `app/routers/rooms.py:92-103`
+- `app/services/stats.py`
+
 #### Root cause
 
 `room_stats` reads only the in-memory `services.stats` aggregate. The SQLite
 booking rows persist across process restarts, but `_stats` resets to `{}`, so
 the endpoint no longer equals the values derivable from the bookings table.
-
-#### Fix summary
-
-`create_room` now calls `cache.invalidate_report(admin.org_id)` after committing the new room, fixed by nahid.
-
-#### Verification after fix
-
-```bash
-# black-box HTTP reproduction re-run against the fixed container
-```
-
-Result:
-
-```text
-Newly created room appears in the usage report immediately, even when a report for the same range was cached beforehand.
-```
