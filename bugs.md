@@ -93,6 +93,7 @@ PUSHED
 | BUG-027 | REPORTED | Abidur | 2026-07-09 | room stats / restart persistence | Hard | | Restarted process returns stats 0/0 for persisted confirmed booking because stats live only in memory (`app/routers/rooms.py:103-119`, `app/services/stats.py`) |
 | BUG-028 | REPORTED | Abidur | 2026-07-09 | reference codes / restart uniqueness | Hard | | Restarted process issues duplicate `CW-001000` for persisted DB because the counter resets to `1000` (`app/services/reference.py:23-34`, `app/routers/bookings.py:117-125`) |
 | BUG-029 | REPORTED | Abidur | 2026-07-09 | auth / token invalidation persistence | Hard | | Logout revocations and used refresh-token JTIs were forgotten after API restart because they lived only in memory (`app/models.py:72-79`, `app/auth.py:89-143`, `app/routers/auth.py:77-96`) |
+| BUG-030 | CLAIMED | Abidur | 2026-07-09 | bookings / malformed datetime validation | Medium | | Suspected malformed `start_time`/`end_time` raises an uncaught parser error instead of documented `400 INVALID_BOOKING_WINDOW` (`app/timeutils.py`, `app/routers/bookings.py:92-104`) |
 
 ## Confirmed Fixes
 
@@ -1617,3 +1618,42 @@ Result:
 ```text
 persisted invalidations: b8d2db29 aa53848c
 ```
+
+---
+
+### BUG-030 - Malformed booking datetimes are not converted to contract errors
+
+Status: CLAIMED
+Owner: Abidur
+Last updated: 2026-07-09
+Difficulty guess: Medium
+Area / workflow: bookings / malformed datetime validation
+
+#### Reproduction
+
+```text
+Pending focused reproduction: submit POST /bookings with a malformed
+start_time or end_time value.
+```
+
+#### Expected behavior
+
+```text
+The API returns 400 INVALID_BOOKING_WINDOW for an invalid booking window.
+```
+
+#### Actual behavior before fix
+
+```text
+Suspected: datetime parsing raises an uncaught ValueError before the router can
+return the documented application error.
+```
+
+#### Suspected or confirmed file/line
+
+- `app/timeutils.py`
+- `app/routers/bookings.py:92-104`
+
+#### Root cause
+
+Pending focused reproduction.
