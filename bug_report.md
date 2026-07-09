@@ -38,6 +38,7 @@ raw evidence live in `bugs.md`.
 | BUG-025 | Hard | `app/routers/admin.py:65-73` | Fixed | Export returned 200 empty CSV instead of 404 for unknown/cross-org room_id |
 | BUG-026 | Medium | `app/routers/rooms.py:42-58` | Fixed | Usage-report cache not invalidated when a room is created |
 | BUG-027 | Hard | `app/routers/rooms.py:103-119` | Fixed | Room stats returned 0/0 after restart because they read only in-memory counters |
+| BUG-028 | Hard | `app/services/reference.py:23-34`, `app/routers/bookings.py:117-125` | Fixed | Reference codes could repeat after restart because the in-memory counter reset |
 
 ---
 
@@ -1737,6 +1738,71 @@ Result:
 
 ```text
 {'room_id': 1, 'total_confirmed_bookings': 1, 'total_revenue_cents': 3000}
+```
+
+---
+
+## BUG-028 - Reference codes could repeat after API restart
+
+### File(s)/line(s)
+
+- `app/services/reference.py:23-34`
+- `app/routers/bookings.py:117-125`
+
+### What was the bug?
+
+Reference codes were generated from a process-local counter initialized to
+`1000`. The generator never checked whether a candidate code was already stored
+in the database.
+
+### Why did it cause incorrect behavior?
+
+The SQLite booking table persists across API restarts, but the in-memory
+counter resets. A fresh process could issue `CW-001000` even when a persisted
+booking already had `CW-001000`, violating Rule 7's uniqueness requirement.
+
+### How was it reproduced?
+
+```text
+Process 1 creates a booking and receives reference_code CW-001000.
+Process 2 starts fresh against the same SQLite DB and creates another booking.
+```
+
+Expected:
+
+```text
+The second booking receives a different reference_code.
+```
+
+Actual before fix:
+
+```text
+Process 1 booking: {"id": 1, "reference_code": "CW-001000"}
+Process 2 booking after restart: {"id": 2, "reference_code": "CW-001000"}
+```
+
+### How was it fixed?
+
+`next_reference_code` now accepts the active DB session and skips any generated
+code already present in persisted `Booking.reference_code` rows. Booking
+creation passes its session into the generator while still inside the booking
+critical section.
+
+### Verification after fix
+
+```bash
+docker run --rm -v "$PWD:/app" -w /app \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e DATABASE_URL=sqlite:////tmp/bug028_reference.db \
+  -e JWT_SECRET=bug028-verify \
+  ict_fest_hackathon_preliminary-api:latest \
+  python -c "<persist CW-001000; reset reference._counter; call next_reference_code(db)>"
+```
+
+Result:
+
+```text
+CW-001001
 ```
 
 ---

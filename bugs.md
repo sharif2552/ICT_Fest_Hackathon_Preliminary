@@ -91,7 +91,7 @@ PUSHED
 | BUG-025 | REPORTED | Abidur | 2026-07-09 | admin export / room_id tenancy error handling | Hard | | Unknown/cross-org `room_id` returns 200 empty CSV instead of 404 (`app/routers/admin.py:65-73`, `app/services/export.py`) |
 | BUG-026 | REPORTED | Abidur | 2026-07-09 | admin usage-report / room creation cache freshness | Medium | | Cached usage report omits rooms created after the report was cached (`app/routers/rooms.py:42-58`, `app/cache.py`) |
 | BUG-027 | REPORTED | Abidur | 2026-07-09 | room stats / restart persistence | Hard | | Restarted process returns stats 0/0 for persisted confirmed booking because stats live only in memory (`app/routers/rooms.py:103-119`, `app/services/stats.py`) |
-| BUG-028 | ROOT_CAUSED | Abidur | 2026-07-09 | reference codes / restart uniqueness | Hard | | Restarted process issues duplicate `CW-001000` for persisted DB because the counter resets to `1000` (`app/services/reference.py`, `app/routers/bookings.py:117-130`) |
+| BUG-028 | REPORTED | Abidur | 2026-07-09 | reference codes / restart uniqueness | Hard | | Restarted process issues duplicate `CW-001000` for persisted DB because the counter resets to `1000` (`app/services/reference.py:23-34`, `app/routers/bookings.py:117-125`) |
 
 ## Confirmed Fixes
 
@@ -124,6 +124,7 @@ PUSHED
 | BUG-025 | export() never validated room_id against caller's org before querying | a31308e | Cross-org/unknown room_id -> 404 ROOM_NOT_FOUND | nahid | Yes |
 | BUG-026 | create_room never invalidated the org usage-report cache | 43c37ce | New room appears in a previously-cached report immediately | nahid | Yes |
 | BUG-027 | stats endpoint read only process-local `_stats` instead of persisted bookings | current BUG-027 fix commit | Cleared `_stats` with persisted booking -> stats returns 1 / 3000 | Abidur | Yes |
+| BUG-028 | reference-code counter reset after restart and did not check persisted bookings | current BUG-028 fix commit | Persisted `CW-001000`, reset counter -> next code `CW-001001` | Abidur | Yes |
 
 ## Push Log
 
@@ -1487,7 +1488,7 @@ Result:
 
 ### BUG-028 - Reference codes can repeat after API restart
 
-Status: ROOT_CAUSED
+Status: REPORTED
 Owner: Abidur
 Last updated: 2026-07-09
 Difficulty guess: Hard
@@ -1515,11 +1516,35 @@ Process 2 booking after restart: {"id": 2, "reference_code": "CW-001000"}
 
 #### Suspected or confirmed file/line
 
-- `app/services/reference.py`
-- `app/routers/bookings.py:117-130`
+- `app/services/reference.py:23-34`
+- `app/routers/bookings.py:117-125`
 
 #### Root cause
 
 Reference codes are generated from a process-local counter initialized to
 1000. The SQLite bookings persist across restarts, but the counter resets, so
 new processes can reuse reference codes already stored in the database.
+
+#### Fix summary
+
+`next_reference_code` now accepts the current database session and skips any
+candidate code that already exists in persisted `Booking.reference_code` rows.
+`create_booking` passes its request session into the generator while still
+running under the booking lock.
+
+#### Verification after fix
+
+```bash
+docker run --rm -v "$PWD:/app" -w /app \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e DATABASE_URL=sqlite:////tmp/bug028_reference.db \
+  -e JWT_SECRET=bug028-verify \
+  ict_fest_hackathon_preliminary-api:latest \
+  python -c "<persist CW-001000; reset reference._counter; call next_reference_code(db)>"
+```
+
+Result:
+
+```text
+CW-001001
+```

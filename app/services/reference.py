@@ -6,6 +6,10 @@ customer-friendly string such as ``CW-001042``.
 import threading
 import time
 
+from sqlalchemy.orm import Session
+
+from ..models import Booking
+
 _counter = {"value": 1000}
 _lock = threading.Lock()
 
@@ -16,9 +20,15 @@ def _format_pause() -> None:
     time.sleep(0.12)
 
 
-def next_reference_code() -> str:
+def next_reference_code(db: Session | None = None) -> str:
     with _lock:
-        current = _counter["value"]
-        _format_pause()
-        _counter["value"] = current + 1
-    return f"CW-{current:06d}"
+        while True:
+            current = _counter["value"]
+            _format_pause()
+            _counter["value"] = current + 1
+            code = f"CW-{current:06d}"
+            if db is None:
+                return code
+            exists = db.query(Booking).filter(Booking.reference_code == code).first()
+            if exists is None:
+                return code
