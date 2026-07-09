@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 import jwt
 from fastapi import Depends, Request
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .config import (
@@ -100,7 +101,12 @@ def _persist_invalidation(db: Session, payload: dict) -> None:
     )
     if exists is None:
         db.add(TokenInvalidation(jti=jti, token_type=token_type, expires_at=_expires_at(payload)))
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            # Another concurrent request already recorded the same jti; the
+            # end state (invalidated) is identical, so treat this as a no-op.
+            db.rollback()
 
 
 def _is_invalidated(db: Session, payload: dict) -> bool:

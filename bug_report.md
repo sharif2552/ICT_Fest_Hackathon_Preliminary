@@ -2004,6 +2004,88 @@ failures: []
 
 ---
 
+## BUG-032 - Concurrent identical logout/refresh calls crashed on a token-invalidation race
+
+### File(s)/line(s)
+
+- `app/auth.py:93-106` (`_persist_invalidation`, used by `/auth/logout` via
+  `revoke_access_token` and `/auth/refresh` via `consume_refresh_token`)
+
+### What was the bug?
+
+`_persist_invalidation` checked whether a `TokenInvalidation` row already
+existed for a token's `jti`, and if not, inserted and committed a new row. It
+did not synchronize that check/insert and did not recover if a concurrent
+request for the *same token* inserted the row first.
+
+### Why did it cause incorrect behavior?
+
+`TokenInvalidation.jti` has a database-level `unique=True` constraint
+(`app/models.py:76`). When the same access token is presented to
+`/auth/logout` twice at once (double-click, client retry after a timeout), or
+the same refresh token is presented to `/auth/refresh` twice at once, more
+than one request can observe "not yet invalidated." The first insert wins;
+every other concurrent insert raises an unhandled `sqlite3.IntegrityError`
+that FastAPI surfaces as a raw `500 Internal Server Error` with
+`content-type: text/plain` — not the API's documented
+`{"detail": ..., "code": ...}` JSON error shape. This is the same
+unguarded-insert-against-a-unique-constraint anti-pattern as BUG-031, on a
+different table.
+
+### How was it reproduced?
+
+```text
+1. Function-level, deterministic: call _persist_invalidation(db, payload)
+   for the same jti from 8 threads synchronized with a threading.Barrier so
+   every thread commits at the same instant.
+2. HTTP-level: fire 20 concurrent POST /auth/logout requests carrying the
+   same valid access token.
+```
+
+Expected:
+
+```text
+Every request for the same jti converges on one TokenInvalidation row; every
+HTTP response is 200 or 401 with the documented JSON error shape; nothing
+crashes.
+```
+
+Actual before fix:
+
+```text
+Barrier test: 7/8 threads raised
+  sqlalchemy.exc.IntegrityError: UNIQUE constraint failed: token_invalidations.jti
+HTTP test: some responses returned 500 Internal Server Error
+  (content-type: text/plain, body "Internal Server Error").
+The API process itself stayed up (/health kept returning 200) — only the
+racing requests failed.
+```
+
+### How was it fixed?
+
+`_persist_invalidation` now wraps `db.commit()` in `try/except IntegrityError`
+and rolls back on conflict. A unique-constraint violation on `jti` means
+another concurrent request already recorded the invalidation for the same
+token — exactly the intended end state — so it is treated as a no-op instead
+of propagating as an error.
+
+### Verification after fix
+
+```text
+Re-run the same 8-thread barrier test and the same 20x concurrent
+/auth/logout HTTP test.
+```
+
+Result:
+
+```text
+Barrier test: 8/8 succeeded, 0 errors, final row count 1 (was 7/8
+IntegrityError before the fix).
+HTTP test: Counter({401: 18, 200: 2}), 0x500, all responses JSON.
+```
+
+---
+
 ## Regression check
 
 ```bash
@@ -2015,5 +2097,5 @@ Result:
 
 ```text
 compileall completed successfully
-1 passed, 2 warnings in 3.17s
+1 passed, 1 warning in 5.45s
 ```

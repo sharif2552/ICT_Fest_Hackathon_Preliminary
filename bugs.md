@@ -95,7 +95,7 @@ PUSHED
 | BUG-029 | REPORTED | Abidur | 2026-07-09 | auth / token invalidation persistence | Hard | | Logout revocations and used refresh-token JTIs were forgotten after API restart because they lived only in memory (`app/models.py:72-79`, `app/auth.py:89-143`, `app/routers/auth.py:77-96`) |
 | BUG-030 | REPORTED | Abidur | 2026-07-09 | bookings / malformed datetime validation | Medium | | Malformed `start_time`/`end_time` returned 500 because `ValueError` escaped datetime parsing; fixed to return `400 INVALID_BOOKING_WINDOW` (`app/routers/bookings.py:93-97`, `app/timeutils.py:5-14`) |
 | BUG-031 | REPORTED | Abidur | 2026-07-09 | auth / concurrent organization registration | Hard | | Concurrent first registrations for the same new org returned 2x500; fixed by recovering from org/user unique races (`app/routers/auth.py:24-60`, `app/models.py:17-26`) |
-| BUG-032 | CLAIMED | nahid | 2026-07-09 | auth / concurrent logout-refresh token invalidation | Hard | | Concurrent identical logout or refresh calls race on `TokenInvalidation.jti` unique constraint, raising uncaught `IntegrityError` -> raw non-JSON 500 (`app/auth.py:93-103`) |
+| BUG-032 | REPORTED | nahid | 2026-07-09 | auth / concurrent logout-refresh token invalidation | Hard | 7af6a2c | Concurrent identical logout or refresh calls raced on `TokenInvalidation.jti` unique constraint, raising uncaught `IntegrityError` -> raw non-JSON 500; fixed by catching `IntegrityError` and rolling back (`app/auth.py:93-106`) |
 
 ## Confirmed Fixes
 
@@ -132,6 +132,7 @@ PUSHED
 | BUG-029 | token invalidation state stored only in process-local sets | current BUG-029 fix commit | Cleared in-memory sets -> persisted access/refresh invalidations still found | Abidur | Yes |
 | BUG-030 | malformed datetime strings raised uncaught `ValueError` in booking creation | current BUG-030 fix commit | malformed start_time/end_time -> 400 INVALID_BOOKING_WINDOW | Abidur | Yes |
 | BUG-031 | concurrent org registration raced on unique organization name | current BUG-031 fix commit | 40 concurrent same-org registrations -> 40x201, roles 1 admin / 39 members | Abidur | Yes |
+| BUG-032 | `_persist_invalidation` checked-then-inserted against `TokenInvalidation.jti` unique constraint with no lock and no error handling | 7af6a2c (claim) + fix commit | 8-thread `threading.Barrier`-forced concurrent call -> 0 errors, 1 row (was 7/8 `IntegrityError`); 20x concurrent HTTP `/auth/logout` -> 0x500, all JSON | nahid | Yes |
 
 ## Push Log
 
@@ -1735,4 +1736,82 @@ to `409 USERNAME_TAKEN`.
 40 responses: 201
 roles created: 1 admin, 39 members
 failures: []
+```
+
+### BUG-032 - Concurrent identical logout/refresh calls crash on TokenInvalidation.jti race
+
+Status: REPORTED
+Owner: nahid
+Last updated: 2026-07-09
+Difficulty guess: Hard
+Area / workflow: auth / concurrent logout-refresh token invalidation
+
+#### Reproduction
+
+```text
+1. Function-level: call app.auth._persist_invalidation(db, payload) with the
+   same jti from 8 threads synchronized with a threading.Barrier so they all
+   commit at the same instant (removes HTTP timing jitter for a deterministic
+   repro).
+2. HTTP-level: fire 20 concurrent POST /auth/logout requests with the same
+   valid access token.
+```
+
+#### Expected behavior
+
+```text
+Every concurrent request for the same jti ends in the same state (exactly one
+TokenInvalidation row) and every HTTP response is either 200 or 401 with the
+documented {"detail": ..., "code": ...} JSON error shape. No request should
+crash.
+```
+
+#### Actual behavior before fix
+
+```text
+Barrier test: 7/8 threads raised sqlalchemy.exc.IntegrityError: UNIQUE
+constraint failed: token_invalidations.jti
+Uncaught by FastAPI -> raw 500 Internal Server Error, content-type:
+text/plain, body "Internal Server Error" (violates the {"detail","code"}
+error contract used everywhere else in the API).
+Service process itself stayed up (/health kept returning 200); only the
+racing requests failed.
+```
+
+#### Suspected or confirmed file/line
+
+- `app/auth.py:93-106` (`_persist_invalidation`, called by `revoke_access_token`
+  for `/auth/logout` and `consume_refresh_token` for `/auth/refresh`)
+
+#### Root cause
+
+`_persist_invalidation` is an unguarded check-then-insert: it `SELECT`s for an
+existing `TokenInvalidation` row, and if none is found, inserts and commits a
+new one against `TokenInvalidation.jti` (`unique=True` in `app/models.py`).
+There is no lock around the check+insert and no `try/except` around the
+`commit()`. When the same token is presented to `/auth/logout` or
+`/auth/refresh` concurrently (double-click, retried request after a client
+timeout, or a deliberate replay burst), more than one request can observe
+"not yet invalidated," and every insert after the first one raises an
+unhandled `sqlite3.IntegrityError` that FastAPI surfaces as a malformed,
+non-JSON 500. This is the same anti-pattern as BUG-031 (unguarded insert
+against a DB unique constraint under a race), but on the token-invalidation
+table rather than `Organization`/`User`.
+
+#### Fix summary
+
+`_persist_invalidation` now wraps `db.commit()` in `try/except IntegrityError`
+and rolls back on conflict. A `UNIQUE` violation on `jti` means another
+concurrent request already recorded the invalidation for the same token, which
+is exactly the intended end state, so it is treated as a no-op rather than an
+error.
+
+#### Verification after fix
+
+```text
+Barrier test (8 threads, same jti): 8/8 succeeded, 0 errors, final row
+count 1 (was 7/8 IntegrityError before the fix).
+HTTP test (20 concurrent /auth/logout, same token): Counter({401: 18, 200: 2}),
+0x500, all responses JSON.
+pytest tests/ -> 1 passed (no regression).
 ```
