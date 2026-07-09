@@ -77,12 +77,12 @@ PUSHED
 | BUG-011 | VERIFIED | nahid | 2026-07-09 | bookings / get detail | Easy | | `app/routers/bookings.py:166` |
 | BUG-012 | VERIFIED | nahid | 2026-07-09 | bookings / list pagination | Medium | | `app/routers/bookings.py:137-139` |
 | BUG-013 | VERIFIED | nahid | 2026-07-09 | timeutils / UTC conversion | Hard | | `app/timeutils.py:11-14` |
-| BUG-014 | ROOT_CAUSED | nahid | 2026-07-09 | bookings / concurrency | Hard | | `app/routers/bookings.py:42-52` |
-| BUG-015 | ROOT_CAUSED | nahid | 2026-07-09 | bookings / concurrency | Hard | | `app/routers/bookings.py:55-71` |
-| BUG-016 | ROOT_CAUSED | nahid | 2026-07-09 | bookings / concurrency | Hard | | `app/routers/bookings.py:178-225` |
-| BUG-017 | ROOT_CAUSED | nahid | 2026-07-09 | reference codes / concurrency | Hard | | `app/services/reference.py:17-21` |
-| BUG-018 | ROOT_CAUSED | nahid | 2026-07-09 | rate limit / concurrency | Medium | | `app/services/ratelimit.py:18-26` |
-| BUG-019 | ROOT_CAUSED | nahid | 2026-07-09 | room stats / concurrency | Medium | | `app/services/stats.py:15-26` |
+| BUG-014 | VERIFIED | nahid | 2026-07-09 | bookings / concurrency | Hard | | `app/routers/bookings.py:42-52` |
+| BUG-015 | VERIFIED | nahid | 2026-07-09 | bookings / concurrency | Hard | | `app/routers/bookings.py:55-71` |
+| BUG-016 | VERIFIED | nahid | 2026-07-09 | bookings / concurrency | Hard | | `app/routers/bookings.py:178-225` |
+| BUG-017 | VERIFIED | nahid | 2026-07-09 | reference codes / concurrency | Hard | | `app/services/reference.py:17-21` |
+| BUG-018 | VERIFIED | nahid | 2026-07-09 | rate limit / concurrency | Medium | | `app/services/ratelimit.py:18-26` |
+| BUG-019 | VERIFIED | nahid | 2026-07-09 | room stats / concurrency | Medium | | `app/services/stats.py:15-26` |
 
 ## Confirmed Fixes
 
@@ -778,7 +778,7 @@ if dt.tzinfo is not None:
 
 ### BUG-014 - Double-booking race condition (no locking around conflict check)
 
-Status: ROOT_CAUSED
+Status: VERIFIED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Hard
@@ -825,7 +825,7 @@ Serialize per-room booking creation, e.g. `db.query(Room).filter(Room.id == room
 
 ### BUG-015 - Booking quota race condition
 
-Status: ROOT_CAUSED
+Status: VERIFIED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Hard
@@ -871,7 +871,7 @@ Cover the quota count and the subsequent insert with the same per-room/per-user 
 
 ### BUG-016 - Duplicate-refund race condition on concurrent cancel
 
-Status: ROOT_CAUSED
+Status: VERIFIED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Hard
@@ -917,7 +917,7 @@ Lock the booking row (or perform an atomic conditional update `UPDATE bookings S
 
 ### BUG-017 - Duplicate reference_code under concurrent booking creation
 
-Status: ROOT_CAUSED
+Status: VERIFIED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Hard
@@ -968,7 +968,7 @@ Guard the read-increment with a `threading.Lock`.
 
 ### BUG-018 - Rate limiter bypass under concurrent requests
 
-Status: ROOT_CAUSED
+Status: VERIFIED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Medium
@@ -1015,7 +1015,7 @@ Guard the bucket read/trim/append/write with a per-user (or global) `threading.L
 
 ### BUG-019 - Room stats lost-update race condition
 
-Status: ROOT_CAUSED
+Status: VERIFIED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Medium
