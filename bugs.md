@@ -94,7 +94,7 @@ PUSHED
 | BUG-028 | REPORTED | Abidur | 2026-07-09 | reference codes / restart uniqueness | Hard | | Restarted process issues duplicate `CW-001000` for persisted DB because the counter resets to `1000` (`app/services/reference.py:23-34`, `app/routers/bookings.py:117-125`) |
 | BUG-029 | REPORTED | Abidur | 2026-07-09 | auth / token invalidation persistence | Hard | | Logout revocations and used refresh-token JTIs were forgotten after API restart because they lived only in memory (`app/models.py:72-79`, `app/auth.py:89-143`, `app/routers/auth.py:77-96`) |
 | BUG-030 | REPORTED | Abidur | 2026-07-09 | bookings / malformed datetime validation | Medium | | Malformed `start_time`/`end_time` returned 500 because `ValueError` escaped datetime parsing; fixed to return `400 INVALID_BOOKING_WINDOW` (`app/routers/bookings.py:93-97`, `app/timeutils.py:5-14`) |
-| BUG-031 | ROOT_CAUSED | Abidur | 2026-07-09 | auth / concurrent organization registration | Hard | | Concurrent first registrations for the same new org returned 2x500 because multiple requests raced to insert the unique org name (`app/routers/auth.py:18-43`, `app/models.py:17-26`) |
+| BUG-031 | REPORTED | Abidur | 2026-07-09 | auth / concurrent organization registration | Hard | | Concurrent first registrations for the same new org returned 2x500; fixed by recovering from org/user unique races (`app/routers/auth.py:24-60`, `app/models.py:17-26`) |
 
 ## Confirmed Fixes
 
@@ -130,6 +130,7 @@ PUSHED
 | BUG-028 | reference-code counter reset after restart and did not check persisted bookings | current BUG-028 fix commit | Persisted `CW-001000`, reset counter -> next code `CW-001001` | Abidur | Yes |
 | BUG-029 | token invalidation state stored only in process-local sets | current BUG-029 fix commit | Cleared in-memory sets -> persisted access/refresh invalidations still found | Abidur | Yes |
 | BUG-030 | malformed datetime strings raised uncaught `ValueError` in booking creation | current BUG-030 fix commit | malformed start_time/end_time -> 400 INVALID_BOOKING_WINDOW | Abidur | Yes |
+| BUG-031 | concurrent org registration raced on unique organization name | current BUG-031 fix commit | 40 concurrent same-org registrations -> 40x201, roles 1 admin / 39 members | Abidur | Yes |
 
 ## Push Log
 
@@ -1679,7 +1680,7 @@ Malformed end_time response: 400 {"code": "INVALID_BOOKING_WINDOW"}
 
 ### BUG-031 - Concurrent first registrations for the same org can fail
 
-Status: ROOT_CAUSED
+Status: REPORTED
 Owner: Abidur
 Last updated: 2026-07-09
 Difficulty guess: Hard
@@ -1709,7 +1710,7 @@ roles created from successful responses: 1 admin, 37 members
 
 #### Suspected or confirmed file/line
 
-- `app/routers/auth.py:18-43`
+- `app/routers/auth.py:24-60`
 - `app/models.py:17-26`
 
 #### Root cause
@@ -1719,3 +1720,18 @@ roles created from successful responses: 1 admin, 37 members
 the unique-name race. Under concurrent first registrations, more than one
 request can observe `org is None`; one insert wins, and another raises an
 unhandled database integrity error.
+
+#### Fix summary
+
+`register` now catches the organization-name `IntegrityError`, rolls back, and
+reloads the organization created by the winning request so the loser joins as a
+member. User creation also maps concurrent duplicate-username `IntegrityError`
+to `409 USERNAME_TAKEN`.
+
+#### Verification after fix
+
+```text
+40 responses: 201
+roles created: 1 admin, 39 members
+failures: []
+```

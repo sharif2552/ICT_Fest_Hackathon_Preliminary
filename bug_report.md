@@ -41,6 +41,7 @@ raw evidence live in `bugs.md`.
 | BUG-028 | Hard | `app/services/reference.py:23-34`, `app/routers/bookings.py:117-125` | Fixed | Reference codes could repeat after restart because the in-memory counter reset |
 | BUG-029 | Hard | `app/models.py:72-79`, `app/auth.py:89-143`, `app/routers/auth.py:77-96` | Fixed | Logout and refresh-token invalidation were forgotten after restart |
 | BUG-030 | Medium | `app/routers/bookings.py:93-97`, `app/timeutils.py:5-14` | Fixed | Malformed booking datetimes returned 500 instead of `400 INVALID_BOOKING_WINDOW` |
+| BUG-031 | Hard | `app/routers/auth.py:24-60`, `app/models.py:17-26` | Fixed | Concurrent first registrations for one org could return 500 |
 
 ---
 
@@ -1939,6 +1940,70 @@ malformed end_time -> 400 {"code": "INVALID_BOOKING_WINDOW"}
 
 ---
 
+## BUG-031 - Concurrent first registrations could fail
+
+### File(s)/line(s)
+
+- `app/routers/auth.py:24-60`
+- `app/models.py:17-26`
+
+### What was the bug?
+
+`POST /auth/register` checked whether an organization existed, then inserted a
+new `Organization` when none was found. It did not recover if another concurrent
+request inserted the same unique organization name first.
+
+### Why did it cause incorrect behavior?
+
+Rule 15 says the first registration for an org creates the admin and later
+registrations for that org join as members. Under concurrent first registrations,
+multiple valid requests could observe the org as missing; one succeeded and the
+others could surface an unhandled database integrity error as `500`.
+
+### How was it reproduced?
+
+```text
+Submit 40 concurrent POST /auth/register requests for the same new org_name
+with different usernames.
+```
+
+Expected:
+
+```text
+All requests succeed: exactly 1 admin and 39 members.
+```
+
+Actual before fix:
+
+```text
+38 responses: 201
+2 responses: 500 Internal Server Error
+roles created from successes: 1 admin, 37 members
+```
+
+### How was it fixed?
+
+Organization creation now catches the unique-name `IntegrityError`, rolls back,
+reloads the organization created by the winning request, and continues with
+`role = "member"`. User creation also maps duplicate-username integrity races to
+the documented `409 USERNAME_TAKEN`.
+
+### Verification after fix
+
+```text
+Run the same 40 concurrent same-org registration requests.
+```
+
+Result:
+
+```text
+40 responses: 201
+roles created: 1 admin, 39 members
+failures: []
+```
+
+---
+
 ## Regression check
 
 ```bash
@@ -1950,5 +2015,5 @@ Result:
 
 ```text
 compileall completed successfully
-1 passed, 2 warnings in 3.12s
+1 passed, 2 warnings in 3.17s
 ```
