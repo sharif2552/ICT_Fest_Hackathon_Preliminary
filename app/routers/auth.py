@@ -20,6 +20,12 @@ from ..schemas import LoginRequest, RefreshRequest, RegisterRequest
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+# A fixed, never-matched hash so login always pays the same PBKDF2 cost
+# whether or not the org/username exists, closing the timing side-channel
+# that would otherwise let an unauthenticated caller enumerate valid
+# org/username pairs by response latency alone.
+_DUMMY_PASSWORD_HASH = hash_password("dummy-password-for-constant-time-login")
+
 
 @router.post("/register", status_code=201)
 def register(payload: RegisterRequest, db: Session = Depends(get_db)):
@@ -77,7 +83,9 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
             .filter(User.org_id == org.id, User.username == payload.username)
             .first()
         )
-    if user is None or not verify_password(payload.password, user.hashed_password):
+    stored_hash = user.hashed_password if user is not None else _DUMMY_PASSWORD_HASH
+    password_ok = verify_password(payload.password, stored_hash)
+    if user is None or not password_ok:
         raise AppError(401, "INVALID_CREDENTIALS", "Invalid username or password")
     return {
         "access_token": create_access_token(user),
