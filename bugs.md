@@ -94,7 +94,7 @@ PUSHED
 | BUG-028 | REPORTED | Abidur | 2026-07-09 | reference codes / restart uniqueness | Hard | | Restarted process issues duplicate `CW-001000` for persisted DB because the counter resets to `1000` (`app/services/reference.py:23-34`, `app/routers/bookings.py:117-125`) |
 | BUG-029 | REPORTED | Abidur | 2026-07-09 | auth / token invalidation persistence | Hard | | Logout revocations and used refresh-token JTIs were forgotten after API restart because they lived only in memory (`app/models.py:72-79`, `app/auth.py:89-143`, `app/routers/auth.py:77-96`) |
 | BUG-030 | REPORTED | Abidur | 2026-07-09 | bookings / malformed datetime validation | Medium | | Malformed `start_time`/`end_time` returned 500 because `ValueError` escaped datetime parsing; fixed to return `400 INVALID_BOOKING_WINDOW` (`app/routers/bookings.py:93-97`, `app/timeutils.py:5-14`) |
-| BUG-031 | CLAIMED | Abidur | 2026-07-09 | auth / concurrent organization registration | Hard | | Suspected concurrent first registrations for the same new org can race on the unique org name and return 500 instead of creating one admin and members (`app/routers/auth.py:18-43`) |
+| BUG-031 | ROOT_CAUSED | Abidur | 2026-07-09 | auth / concurrent organization registration | Hard | | Concurrent first registrations for the same new org returned 2x500 because multiple requests raced to insert the unique org name (`app/routers/auth.py:18-43`, `app/models.py:17-26`) |
 
 ## Confirmed Fixes
 
@@ -1679,7 +1679,7 @@ Malformed end_time response: 400 {"code": "INVALID_BOOKING_WINDOW"}
 
 ### BUG-031 - Concurrent first registrations for the same org can fail
 
-Status: CLAIMED
+Status: ROOT_CAUSED
 Owner: Abidur
 Last updated: 2026-07-09
 Difficulty guess: Hard
@@ -1688,8 +1688,8 @@ Area / workflow: auth / concurrent organization registration
 #### Reproduction
 
 ```text
-Pending focused reproduction: submit concurrent POST /auth/register requests
-for the same new org_name with different usernames.
+Submit 40 concurrent POST /auth/register requests for the same new org_name
+with different usernames.
 ```
 
 #### Expected behavior
@@ -1702,8 +1702,9 @@ organization as members. No valid concurrent registration should return 500.
 #### Actual behavior before fix
 
 ```text
-Suspected: more than one request observes org == None and tries to insert the
-same unique organization name, causing an unhandled database error.
+38 responses: 201
+2 responses: 500 Internal Server Error
+roles created from successful responses: 1 admin, 37 members
 ```
 
 #### Suspected or confirmed file/line
@@ -1713,4 +1714,8 @@ same unique organization name, causing an unhandled database error.
 
 #### Root cause
 
-Pending focused reproduction.
+`register` checks for an existing organization, then inserts and commits a new
+`Organization` without synchronizing that check/insert path or recovering from
+the unique-name race. Under concurrent first registrations, more than one
+request can observe `org is None`; one insert wins, and another raises an
+unhandled database integrity error.
