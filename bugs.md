@@ -90,6 +90,7 @@ PUSHED
 | BUG-024 | REPORTED | Sadik | 2026-07-09 | room availability / cache freshness | Medium | | Cached availability stays stale after booking cancel (`app/routers/bookings.py:228-230`, `app/cache.py`) |
 | BUG-025 | REPORTED | Sadik | 2026-07-09 | admin export / room_id tenancy error handling | Hard | | Unknown/cross-org `room_id` returns 200 empty CSV instead of 404 (`app/routers/admin.py:65-73`, `app/services/export.py`) |
 | BUG-026 | REPORTED | Abidur | 2026-07-09 | admin usage-report / room creation cache freshness | Medium | | Cached usage report omits rooms created after the report was cached (`app/routers/rooms.py:42-58`, `app/cache.py`) |
+| BUG-027 | CLAIMED | Sadik | 2026-07-09 | room stats / persistence after restart | Medium | | Suspected in-memory stats reset while bookings persist (`app/routers/rooms.py`, `app/services/stats.py`) |
 
 ## Confirmed Fixes
 
