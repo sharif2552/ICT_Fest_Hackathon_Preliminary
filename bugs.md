@@ -95,6 +95,7 @@ PUSHED
 | BUG-029 | REPORTED | Abidur | 2026-07-09 | auth / token invalidation persistence | Hard | | Logout revocations and used refresh-token JTIs were forgotten after API restart because they lived only in memory (`app/models.py:72-79`, `app/auth.py:89-143`, `app/routers/auth.py:77-96`) |
 | BUG-030 | REPORTED | Abidur | 2026-07-09 | bookings / malformed datetime validation | Medium | | Malformed `start_time`/`end_time` returned 500 because `ValueError` escaped datetime parsing; fixed to return `400 INVALID_BOOKING_WINDOW` (`app/routers/bookings.py:93-97`, `app/timeutils.py:5-14`) |
 | BUG-031 | REPORTED | Abidur | 2026-07-09 | auth / concurrent organization registration | Hard | | Concurrent first registrations for the same new org returned 2x500; fixed by recovering from org/user unique races (`app/routers/auth.py:24-60`, `app/models.py:17-26`) |
+| BUG-032 | CLAIMED | nahid | 2026-07-09 | auth / concurrent logout-refresh token invalidation | Hard | | Concurrent identical logout or refresh calls race on `TokenInvalidation.jti` unique constraint, raising uncaught `IntegrityError` -> raw non-JSON 500 (`app/auth.py:93-103`) |
 
 ## Confirmed Fixes
 
