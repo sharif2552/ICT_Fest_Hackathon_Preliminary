@@ -4,7 +4,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - JWT_SECRET=cowork-dev-secret-change-me
+      - JWT_SECRET=b27c98d2d42e87148be529a329a321eb86d142f1da44dac456d09a2face55c39
       - DATABASE_URL=sqlite:////app/data/cowork.db
     volumes:
       - cowork-data:/app/data
