@@ -39,6 +39,7 @@ raw evidence live in `bugs.md`.
 | BUG-026 | Medium | `app/routers/rooms.py:42-58` | Fixed | Usage-report cache not invalidated when a room is created |
 | BUG-027 | Hard | `app/routers/rooms.py:103-119` | Fixed | Room stats returned 0/0 after restart because they read only in-memory counters |
 | BUG-028 | Hard | `app/services/reference.py:23-34`, `app/routers/bookings.py:117-125` | Fixed | Reference codes could repeat after restart because the in-memory counter reset |
+| BUG-029 | Hard | `app/models.py:72-79`, `app/auth.py:89-143`, `app/routers/auth.py:77-96` | Fixed | Logout and refresh-token invalidation were forgotten after restart |
 
 ---
 
@@ -1803,6 +1804,70 @@ Result:
 
 ```text
 CW-001001
+```
+
+---
+
+## BUG-029 - Token invalidation was forgotten after API restart
+
+### File(s)/line(s)
+
+- `app/models.py:72-79`
+- `app/auth.py:89-143`
+- `app/routers/auth.py:77-96`
+
+### What was the bug?
+
+Logout revocations and used refresh-token JTIs were stored only in process-local
+sets: `_revoked_tokens` and `_used_refresh_tokens`.
+
+### Why did it cause incorrect behavior?
+
+Those sets reset on process restart, while unexpired JWTs remain
+cryptographically valid. A logged-out access token or already-used refresh token
+could become usable again after restart, violating Rule 8's invalidation and
+single-use requirements.
+
+### How was it reproduced?
+
+```text
+Revoke an access token and consume a refresh token, clear/restart the in-memory
+sets, then check the same JWT JTIs against a fresh DB-backed auth state.
+```
+
+Expected:
+
+```text
+Both JTIs remain invalid after the in-memory sets are cleared.
+```
+
+Actual before fix:
+
+```text
+Both invalidation records were lost because only process memory tracked them.
+```
+
+### How was it fixed?
+
+Added a persisted `TokenInvalidation` table keyed by JWT `jti` and token type.
+Logout persists access-token revocations, refresh consumes persist used
+refresh-token JTIs, and auth checks consult both the in-memory set and SQLite.
+
+### Verification after fix
+
+```bash
+docker run --rm -v "$PWD:/app" -w /app \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e DATABASE_URL=sqlite:////tmp/bug029_auth.db \
+  -e JWT_SECRET=bug029-verify \
+  ict_fest_hackathon_preliminary-api:latest \
+  python -c "<revoke access; consume refresh; clear in-memory sets; check DB invalidations>"
+```
+
+Result:
+
+```text
+persisted invalidations: b8d2db29 aa53848c
 ```
 
 ---

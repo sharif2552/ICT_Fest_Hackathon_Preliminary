@@ -17,7 +17,7 @@ from .config import (
 )
 from .database import get_db
 from .errors import AppError
-from .models import User
+from .models import TokenInvalidation, User
 
 # Access tokens presented to /auth/logout are recorded here so they can no
 # longer be used.
@@ -86,18 +86,49 @@ def decode_token(token: str) -> dict:
         raise AppError(401, "UNAUTHORIZED", "Invalid or expired token")
 
 
-def revoke_access_token(payload: dict) -> None:
+def _expires_at(payload: dict) -> datetime:
+    return datetime.fromtimestamp(int(payload["exp"]), timezone.utc).replace(tzinfo=None)
+
+
+def _persist_invalidation(db: Session, payload: dict) -> None:
+    jti = payload["jti"]
+    token_type = payload["type"]
+    exists = (
+        db.query(TokenInvalidation)
+        .filter(TokenInvalidation.jti == jti, TokenInvalidation.token_type == token_type)
+        .first()
+    )
+    if exists is None:
+        db.add(TokenInvalidation(jti=jti, token_type=token_type, expires_at=_expires_at(payload)))
+        db.commit()
+
+
+def _is_invalidated(db: Session, payload: dict) -> bool:
+    return (
+        db.query(TokenInvalidation)
+        .filter(
+            TokenInvalidation.jti == payload["jti"],
+            TokenInvalidation.token_type == payload["type"],
+        )
+        .first()
+        is not None
+    )
+
+
+def revoke_access_token(payload: dict, db: Session) -> None:
     _revoked_tokens.add(payload["jti"])
+    _persist_invalidation(db, payload)
 
 
-def consume_refresh_token(payload: dict) -> None:
+def consume_refresh_token(payload: dict, db: Session) -> None:
     """Mark a refresh token's jti as used; raise 401 if it was already used."""
-    if payload["jti"] in _used_refresh_tokens:
+    if payload["jti"] in _used_refresh_tokens or _is_invalidated(db, payload):
         raise AppError(401, "UNAUTHORIZED", "Refresh token already used")
     _used_refresh_tokens.add(payload["jti"])
+    _persist_invalidation(db, payload)
 
 
-def get_token_payload(request: Request) -> dict:
+def get_token_payload(request: Request, db: Session = Depends(get_db)) -> dict:
     header = request.headers.get("Authorization")
     if not header or not header.startswith("Bearer "):
         raise AppError(401, "UNAUTHORIZED", "Missing bearer token")
@@ -105,7 +136,7 @@ def get_token_payload(request: Request) -> dict:
     payload = decode_token(token)
     if payload.get("type") != "access":
         raise AppError(401, "UNAUTHORIZED", "Wrong token type")
-    if payload.get("jti") in _revoked_tokens:
+    if payload.get("jti") in _revoked_tokens or _is_invalidated(db, payload):
         raise AppError(401, "UNAUTHORIZED", "Token has been revoked")
     return payload
 

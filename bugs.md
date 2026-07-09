@@ -92,7 +92,7 @@ PUSHED
 | BUG-026 | REPORTED | Abidur | 2026-07-09 | admin usage-report / room creation cache freshness | Medium | | Cached usage report omits rooms created after the report was cached (`app/routers/rooms.py:42-58`, `app/cache.py`) |
 | BUG-027 | REPORTED | Abidur | 2026-07-09 | room stats / restart persistence | Hard | | Restarted process returns stats 0/0 for persisted confirmed booking because stats live only in memory (`app/routers/rooms.py:103-119`, `app/services/stats.py`) |
 | BUG-028 | REPORTED | Abidur | 2026-07-09 | reference codes / restart uniqueness | Hard | | Restarted process issues duplicate `CW-001000` for persisted DB because the counter resets to `1000` (`app/services/reference.py:23-34`, `app/routers/bookings.py:117-125`) |
-| BUG-029 | CLAIMED | Abidur | 2026-07-09 | auth / token invalidation persistence | Hard | | Suspected logout revocations and used refresh-token JTIs are forgotten after API restart because they live only in memory (`app/auth.py`, `app/routers/auth.py`) |
+| BUG-029 | REPORTED | Abidur | 2026-07-09 | auth / token invalidation persistence | Hard | | Logout revocations and used refresh-token JTIs were forgotten after API restart because they lived only in memory (`app/models.py:72-79`, `app/auth.py:89-143`, `app/routers/auth.py:77-96`) |
 
 ## Confirmed Fixes
 
@@ -126,6 +126,7 @@ PUSHED
 | BUG-026 | create_room never invalidated the org usage-report cache | 43c37ce | New room appears in a previously-cached report immediately | nahid | Yes |
 | BUG-027 | stats endpoint read only process-local `_stats` instead of persisted bookings | current BUG-027 fix commit | Cleared `_stats` with persisted booking -> stats returns 1 / 3000 | Abidur | Yes |
 | BUG-028 | reference-code counter reset after restart and did not check persisted bookings | current BUG-028 fix commit | Persisted `CW-001000`, reset counter -> next code `CW-001001` | Abidur | Yes |
+| BUG-029 | token invalidation state stored only in process-local sets | current BUG-029 fix commit | Cleared in-memory sets -> persisted access/refresh invalidations still found | Abidur | Yes |
 
 ## Push Log
 
@@ -1554,7 +1555,7 @@ CW-001001
 
 ### BUG-029 - Token invalidation is forgotten after API restart
 
-Status: CLAIMED
+Status: REPORTED
 Owner: Abidur
 Last updated: 2026-07-09
 Difficulty guess: Hard
@@ -1577,16 +1578,42 @@ restart and return 401.
 #### Actual behavior before fix
 
 ```text
-Suspected: process restart clears `_revoked_tokens` and `_used_refresh_tokens`,
-so the same cryptographically valid JWT can be accepted again.
+Process restart clears `_revoked_tokens` and `_used_refresh_tokens`, so the same
+cryptographically valid JWT can be accepted again.
 ```
 
 #### Suspected or confirmed file/line
 
-- `app/auth.py`
-- `app/routers/auth.py`
+- `app/models.py:72-79`
+- `app/auth.py:89-143`
+- `app/routers/auth.py:77-96`
 
 #### Root cause
 
-Pending focused reproduction. The likely cause is that token invalidation state
-is stored only in process-local sets and is not persisted in SQLite.
+Token invalidation state was stored only in process-local sets and was not
+persisted in SQLite, even though the JWTs themselves remain valid until their
+`exp` claim after a restart.
+
+#### Fix summary
+
+Added a persisted `TokenInvalidation` table keyed by JWT `jti` and token type.
+Logout persists access-token revocations, refresh consumes persist used
+refresh-token JTIs, and access/refresh checks consult both the in-memory cache
+and SQLite.
+
+#### Verification after fix
+
+```bash
+docker run --rm -v "$PWD:/app" -w /app \
+  -e PYTHONDONTWRITEBYTECODE=1 \
+  -e DATABASE_URL=sqlite:////tmp/bug029_auth.db \
+  -e JWT_SECRET=bug029-verify \
+  ict_fest_hackathon_preliminary-api:latest \
+  python -c "<revoke access; consume refresh; clear in-memory sets; check DB invalidations>"
+```
+
+Result:
+
+```text
+persisted invalidations: b8d2db29 aa53848c
+```
