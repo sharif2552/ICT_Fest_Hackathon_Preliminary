@@ -2623,11 +2623,17 @@ downstream negative price/revenue corruption is unreachable.
 ```bash
 python -m compileall app tests
 pytest -q
+fresh temporary-DB focused contract suite
+docker build + external HTTP smoke
 ```
 
 Result:
 
 ```text
 compileall completed successfully
-1 passed, 1 warning in 6.45s
+pytest: 1 passed, 3 warnings in 4.32s
+focused contract suite: 51 checks passed across route contract,
+BUG-036/037/038/039, tenancy, and error shapes
+Docker smoke: health, auth, malformed JWT 401, room validation, booking
+create, and validation-error rate-limit behavior passed
 ```

@@ -178,7 +178,9 @@ Adapt this table to the actual problem statement and repository.
 | Error handling | Unknown/cross-org resources return the documented 404 codes | Pass | BUG-003 |
 | Persistence | Booking/refund/stats state persists correctly across requests | Pass | BUG-016, BUG-019 |
 | Response shape | Booking detail returns correct start_time field | Pass | BUG-011 |
-| Regression | `docker compose exec api python -m pytest tests/ -v` | Pass | 1 passed |
+| Regression | `python -m compileall app tests`; `pytest -q` | Pass | compileall OK; pytest 1 passed, 3 warnings |
+| Regression | Fresh temporary-DB focused contract suite | Pass | 51 checks passed across route contract, BUG-036/037/038/039, tenancy, and error shapes |
+| Regression | Docker build + external HTTP smoke | Pass | health, auth, malformed JWT 401, room validation, booking create, and BUG-036 rate-limit behavior passed |
 
 ## Rejected Suspicions
 
