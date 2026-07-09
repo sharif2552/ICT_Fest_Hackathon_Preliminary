@@ -20,3 +20,14 @@ async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
         status_code=exc.status_code,
         content={"detail": exc.detail, "code": exc.code},
     )
+
+
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    # Last-resort safety net: any exception that isn't an AppError (a bug we
+    # haven't found and wrapped yet) still has to honor the documented
+    # {"detail","code"} error contract instead of falling through to
+    # Starlette's default plain-text 500.
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error", "code": "INTERNAL_ERROR"},
+    )

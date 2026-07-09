@@ -98,7 +98,7 @@ PUSHED
 | BUG-032 | REPORTED | nahid + Abidur | 2026-07-09 | auth / concurrent logout-refresh token invalidation | Hard | 7af6a2c | Concurrent identical logout/refresh calls raced on `TokenInvalidation.jti`, raising uncaught `IntegrityError` -> raw non-JSON 500 (fixed with try/except+rollback in `_persist_invalidation`); separately, concurrent identical `/auth/refresh` calls could each pass the single-use check before either recorded it, so more than one could return 200 for the same refresh_token, violating Rule 8 -> closed with an `_invalidation_lock` around `consume_refresh_token`/`revoke_access_token` (`app/auth.py:93-143`) |
 | BUG-033 | REPORTED | nahid | 2026-07-09 | cancellation / refund-log and status-update atomicity | Hard | 7977e72 | `log_refund()` commits independently of the booking status-update commit in `cancel_booking`; a crash/failure between the two commits leaves a durable refund with `status` still `confirmed`, so a client retry re-enters `log_refund` and logs a second, unguarded duplicate refund; fixed by making `log_refund` flush (not commit) so the caller's single commit covers both writes atomically (`app/services/refunds.py:14-28`, `app/routers/bookings.py:226-231`) |
 | BUG-034 | REPORTED | nahid | 2026-07-09 | booking rate limit / restart persistence | Medium | 8a8c01e | Rate-limit buckets lived only in a process-local dict (`_buckets`); an API restart silently reset every user's 20-req/60s window, same in-memory-state-lost-on-restart class as BUG-027/028/029; fixed with a persisted `RateLimitEvent` table (`app/services/ratelimit.py`, `app/models.py:81-86`) |
-| BUG-035 | CLAIMED | nahid | 2026-07-09 | error handling / missing catch-all exception handler | Medium | | `app/main.py` only registers a handler for `AppError`; any other uncaught exception (the exact root symptom behind BUG-030/031/032/033, each patched locally) falls through to Starlette's default handler and returns a raw `text/plain` 500, violating the documented `{"detail","code"}` JSON contract. Reproduced live with a generic `ZeroDivisionError` unrelated to any known bug (`app/main.py`, `app/errors.py`) |
+| BUG-035 | REPORTED | nahid | 2026-07-09 | error handling / missing catch-all exception handler | Medium | (see fix commit) | `app/main.py` only registered a handler for `AppError`; any other uncaught exception (the exact root symptom behind BUG-030/031/032/033, each patched locally) fell through to Starlette's default handler and returned a raw `text/plain` 500, violating the documented `{"detail","code"}` JSON contract. Reproduced live with a generic `ZeroDivisionError` unrelated to any known bug; fixed with a global `Exception` handler (`app/main.py`, `app/errors.py`) |
 
 ## Confirmed Fixes
 
@@ -138,6 +138,7 @@ PUSHED
 | BUG-032 | `_persist_invalidation` checked-then-inserted against `TokenInvalidation.jti` with no lock/error handling; separately, `consume_refresh_token`'s already-used check + record was unguarded | 7af6a2c (claim) + fix commit + `_invalidation_lock` addendum | 8-thread `threading.Barrier` concurrent call -> 0 errors, 1 row; 20x concurrent HTTP `/auth/logout` -> 0x500, all JSON; 8x concurrent HTTP `/auth/refresh` with same token -> exactly 1x200, 7x401 | nahid + Abidur | Yes |
 | BUG-033 | `log_refund()` committed independently of the caller's booking-status-update commit, so a crash between the two commits left a durable refund against a still-`confirmed` booking, letting a retry double-log the refund | current BUG-033 fix commit | Monkeypatched `Session.commit` to fail on the status-update commit; crash left 0 refund rows + `confirmed` status (was 1 refund row + `confirmed` before the fix); retry then produced exactly 1 refund row + `cancelled` status | nahid | Yes |
 | BUG-034 | rate-limit window lived only in a process-local dict, reset on every restart | current BUG-034 fix commit | Consumed 15/20 slots, restarted the container, confirmed 15 `RateLimitEvent` rows survived; 5 more requests succeeded and the 6th was correctly rejected (429). 30-thread concurrency test still produced exactly 20 ok / 10 rejected (BUG-018 guarantee preserved) | nahid | Yes |
+| BUG-035 | `app/main.py` registered a handler only for `AppError`; every other exception type fell through to Starlette's default plain-text 500 | current BUG-035 fix commit | Forced a generic `ZeroDivisionError` (unrelated to any known bug) deep in the create-booking response path: before fix -> `text/plain`, `"Internal Server Error"`; after fix -> `application/json`, `{"detail":"Internal server error","code":"INTERNAL_ERROR"}`. Confirmed existing `AppError` responses (404 etc.) and FastAPI's own 422 validation responses are unaffected | nahid | Yes |
 
 ## Push Log
 
@@ -2001,4 +2002,89 @@ Consumed 15/20 slots for a test user, then `docker compose restart api`:
   ok=20, rejected=10 (unchanged from the pre-existing BUG-018 guarantee)
 
 pytest tests/ -> 1 passed (no regression).
+```
+
+### BUG-035 - No catch-all exception handler; unexpected errors returned a malformed non-JSON 500
+
+Status: REPORTED
+Owner: nahid
+Last updated: 2026-07-09
+Difficulty guess: Medium
+Area / workflow: error handling / missing catch-all exception handler
+
+#### Reproduction
+
+```text
+1. Register/login a fresh user, create a room.
+2. Monkeypatch app.routers.bookings.serialize_booking to raise a
+   ZeroDivisionError -- a generic exception type completely unrelated to any
+   already-known bug (BUG-030/031/032/033), used only to prove the handling
+   gap is systemic rather than one specific leftover trigger.
+3. POST /bookings with a valid payload and inspect the response.
+```
+
+#### Expected behavior
+
+```text
+Every error response from the API, including ones caused by bugs not yet
+discovered, should honor the documented contract:
+  {"detail": <string>, "code": <CODE>}
+```
+
+#### Actual behavior before fix
+
+```text
+status: 500
+content-type: text/plain; charset=utf-8
+body: Internal Server Error
+```
+
+#### Suspected or confirmed file/line
+
+- `app/main.py` (only `app.add_exception_handler(AppError, app_error_handler)`
+  was registered)
+- `app/errors.py` (docstring assumes "every business-rule violation raises
+  AppError", but nothing structurally enforces that)
+
+#### Root cause
+
+`errors.py`'s own docstring states the assumption plainly: "Every
+business-rule violation raises `AppError`, which is rendered as
+`{"detail": ..., "code": ...}`." `main.py` only ever registered a handler for
+`AppError` itself. Any other exception type -- a `ValueError` from a bad
+`datetime.fromisoformat()` (BUG-030), a `sqlite3.IntegrityError` from a
+unique-constraint race (BUG-031/032), or literally anything else not yet
+discovered -- has no handler and falls through to Starlette's built-in
+`ServerErrorMiddleware`, which returns a plain-text `"Internal Server Error"`
+outside the app's JSON error contract. Each of BUG-030/031/032/033 was
+patched at its own call site, but the *systemic* gap -- no safety net for the
+next unexpected exception -- was never closed. Proven live with a
+`ZeroDivisionError`, a type that has never appeared anywhere in this bug
+list, confirming the gap is structural and not just leftover instances of
+already-known bugs.
+
+#### Fix summary
+
+Added `unhandled_exception_handler` in `app/errors.py` and registered it in
+`app/main.py` via `app.add_exception_handler(Exception, unhandled_exception_handler)`.
+FastAPI/Starlette resolve exception handlers by the most specific matching
+class in the exception's MRO, so this catch-all does not shadow the existing,
+more specific `AppError` handler, FastAPI's built-in `RequestValidationError`
+(422) handler, or `HTTPException` handling -- it only catches what nothing
+else already handles.
+
+#### Verification after fix
+
+```text
+Same ZeroDivisionError repro:
+  status: 500
+  content-type: application/json
+  body: {"detail":"Internal server error","code":"INTERNAL_ERROR"}
+
+Regression checks:
+  GET /bookings/999999 -> 404 {"detail":"Booking not found","code":"BOOKING_NOT_FOUND"}
+    (existing AppError handling unaffected)
+  POST /auth/register with a malformed body -> 422 with FastAPI's normal
+    validation-error shape (unaffected)
+  pytest tests/ -> 1 passed (no regression)
 ```

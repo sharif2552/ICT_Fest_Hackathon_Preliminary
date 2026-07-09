@@ -45,6 +45,7 @@ raw evidence live in `bugs.md`.
 | BUG-032 | Hard | `app/auth.py:93-143` | Fixed | Concurrent identical logout/refresh calls crashed on a token-invalidation race; concurrent identical refresh calls could also both succeed (single-use violation) |
 | BUG-033 | Hard | `app/services/refunds.py:14-28`, `app/routers/bookings.py:226-231` | Fixed | Refund-log and booking-status-update commits were not atomic; a crash between them let a retry double-log a refund |
 | BUG-034 | Medium | `app/services/ratelimit.py`, `app/models.py:81-86` | Fixed | Booking rate-limit window lived only in memory and silently reset on every API restart |
+| BUG-035 | Medium | `app/main.py`, `app/errors.py` | Fixed | No catch-all exception handler; any uncaught non-`AppError` exception returned a malformed non-JSON 500 |
 
 ---
 
@@ -2273,6 +2274,89 @@ RateLimitEvent rows for that user after restart: 15 (survived)
 
 ---
 
+## BUG-035 - No catch-all exception handler; unexpected errors returned a malformed non-JSON 500
+
+### File(s)/line(s)
+
+- `app/main.py` (only registered a handler for `AppError`)
+- `app/errors.py` (docstring states the assumption; nothing enforced it)
+
+### What was the bug?
+
+`main.py` registered `app.add_exception_handler(AppError, app_error_handler)`
+and nothing else. Any exception that wasn't an `AppError` had no registered
+handler at all.
+
+### Why did it cause incorrect behavior?
+
+`errors.py`'s own docstring states the intended contract: "Every
+business-rule violation raises `AppError`, which is rendered as
+`{"detail": ..., "code": ...}`." That's an assumption, not an enforced
+guarantee — nothing in `main.py` backstops it. Any exception that wasn't an
+`AppError` (a bad `datetime.fromisoformat()` — BUG-030; a
+`sqlite3.IntegrityError` from a unique-constraint race — BUG-031/032; or
+anything not yet discovered) fell through to Starlette's default
+`ServerErrorMiddleware`, which returns a plain-text `"Internal Server Error"`
+outside the documented JSON contract. BUG-030 through BUG-033 were each
+patched individually at their own call site, but the systemic gap — no
+safety net for the *next* unexpected exception — was never closed.
+
+### How was it reproduced?
+
+```text
+1. Register/login a fresh user, create a room.
+2. Monkeypatch app.routers.bookings.serialize_booking to raise a
+   ZeroDivisionError -- a generic exception type unrelated to any of
+   BUG-030/031/032/033, used specifically to prove the gap is structural
+   and not just a leftover instance of an already-known bug.
+3. POST /bookings with a valid payload and inspect the response.
+```
+
+Expected:
+
+```text
+{"detail": "Internal server error", "code": "INTERNAL_ERROR"} (or similar),
+status 500, content-type application/json.
+```
+
+Actual before fix:
+
+```text
+status: 500
+content-type: text/plain; charset=utf-8
+body: Internal Server Error
+```
+
+### How was it fixed?
+
+Added `unhandled_exception_handler` in `app/errors.py` and registered it via
+`app.add_exception_handler(Exception, unhandled_exception_handler)` in
+`app/main.py`. FastAPI/Starlette resolve handlers by the most specific
+matching class in the exception's MRO, so this catch-all only intercepts
+what nothing else already handles — it does not shadow the existing
+`AppError` handler, FastAPI's built-in `RequestValidationError` (422)
+handling, or `HTTPException` handling.
+
+### Verification after fix
+
+```text
+Same ZeroDivisionError repro.
+```
+
+Result:
+
+```text
+status: 500, content-type: application/json
+body: {"detail":"Internal server error","code":"INTERNAL_ERROR"}
+
+Regression checks:
+  GET /bookings/999999 -> 404 {"detail":"Booking not found","code":"BOOKING_NOT_FOUND"}
+  POST /auth/register with a malformed body -> 422, FastAPI's normal
+    validation-error shape, unaffected
+```
+
+---
+
 ## Regression check
 
 ```bash
@@ -2284,5 +2368,5 @@ Result:
 
 ```text
 compileall completed successfully
-1 passed, 1 warning in 5.98s
+1 passed, 1 warning in 6.14s
 ```

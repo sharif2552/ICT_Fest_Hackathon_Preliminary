@@ -2,7 +2,7 @@
 from fastapi import FastAPI
 
 from .database import Base, engine
-from .errors import AppError, app_error_handler
+from .errors import AppError, app_error_handler, unhandled_exception_handler
 from .routers import admin, auth, bookings, health, rooms
 
 Base.metadata.create_all(bind=engine)
@@ -10,6 +10,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(title="CoWork API", version="1.0.0")
 
 app.add_exception_handler(AppError, app_error_handler)
+app.add_exception_handler(Exception, unhandled_exception_handler)
 
 app.include_router(health.router)
 app.include_router(auth.router)
