@@ -73,9 +73,9 @@ PUSHED
 | BUG-007 | VERIFIED | nahid | 2026-07-09 | bookings / create validation | Medium | | `app/routers/bookings.py:86` |
 | BUG-008 | VERIFIED | nahid | 2026-07-09 | bookings / create validation | Medium | | `app/routers/bookings.py:89-94` |
 | BUG-009 | VERIFIED | nahid | 2026-07-09 | bookings / conflict check | Medium | | `app/routers/bookings.py:50` |
-| BUG-010 | ROOT_CAUSED | nahid | 2026-07-09 | bookings / cancel refund | Medium | | `app/routers/bookings.py:198-208` |
-| BUG-011 | ROOT_CAUSED | nahid | 2026-07-09 | bookings / get detail | Easy | | `app/routers/bookings.py:166` |
-| BUG-012 | ROOT_CAUSED | nahid | 2026-07-09 | bookings / list pagination | Medium | | `app/routers/bookings.py:137-139` |
+| BUG-010 | VERIFIED | nahid | 2026-07-09 | bookings / cancel refund | Medium | | `app/routers/bookings.py:198-208` |
+| BUG-011 | VERIFIED | nahid | 2026-07-09 | bookings / get detail | Easy | | `app/routers/bookings.py:166` |
+| BUG-012 | VERIFIED | nahid | 2026-07-09 | bookings / list pagination | Medium | | `app/routers/bookings.py:137-139` |
 | BUG-013 | VERIFIED | nahid | 2026-07-09 | timeutils / UTC conversion | Hard | | `app/timeutils.py:11-14` |
 | BUG-014 | ROOT_CAUSED | nahid | 2026-07-09 | bookings / concurrency | Hard | | `app/routers/bookings.py:42-52` |
 | BUG-015 | ROOT_CAUSED | nahid | 2026-07-09 | bookings / concurrency | Hard | | `app/routers/bookings.py:55-71` |
@@ -560,7 +560,7 @@ Change to `b.start_time < end and start < b.end_time`.
 
 ### BUG-010 - Cancellation refund is always >=50%, never 0%
 
-Status: ROOT_CAUSED
+Status: VERIFIED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Medium
@@ -614,7 +614,7 @@ else: refund_percent = 0
 
 ### BUG-011 - GET /bookings/{id} returns created_at as start_time
 
-Status: ROOT_CAUSED
+Status: VERIFIED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Easy
@@ -658,7 +658,7 @@ Delete the `response["start_time"] = iso_utc(booking.created_at)` line.
 
 ### BUG-012 - GET /bookings pagination skips records, ignores limit, wrong sort order
 
-Status: ROOT_CAUSED
+Status: VERIFIED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Medium
