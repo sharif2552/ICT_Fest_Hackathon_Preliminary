@@ -30,6 +30,13 @@ raw evidence live in `bugs.md`.
 | BUG-017 | Hard | `app/services/reference.py:17-21` | Fixed | Race condition allowed duplicate `reference_code` values |
 | BUG-018 | Medium | `app/services/ratelimit.py:18-26` | Fixed | Race condition allowed bypassing the booking rate limit |
 | BUG-019 | Medium | `app/services/stats.py:15-26` | Fixed | Race condition caused lost updates in live room stats |
+| BUG-020 | Hard | `app/routers/bookings.py:162-186` | Fixed | Any org member could read another member's booking (IDOR) |
+| BUG-021 | Medium | `app/routers/bookings.py:220`, `app/services/refunds.py:14-18` | Fixed | Refund rounding truncated instead of rounding half-cents up; response/RefundLog could diverge |
+| BUG-022 | Hard | `app/services/notifications.py:24-35` | Fixed | Opposite lock ordering could deadlock concurrent create/cancel notifications |
+| BUG-023 | Medium | `app/routers/bookings.py:132-134` | Fixed | Usage-report cache not invalidated when a booking is created |
+| BUG-024 | Medium | `app/routers/bookings.py:228-230` | Fixed | Availability cache not invalidated when a booking is cancelled |
+| BUG-025 | Hard | `app/routers/admin.py:65-73` | Fixed | Export returned 200 empty CSV instead of 404 for unknown/cross-org room_id |
+| BUG-026 | Medium | `app/routers/rooms.py:42-58` | Fixed | Usage-report cache not invalidated when a room is created |
 
 ---
 
@@ -1233,6 +1240,432 @@ Result:
 
 ```text
 successful creates: 6, stats.total_confirmed_bookings: 6, match: True
+```
+
+---
+
+## BUG-020 - `GET /bookings/{id}` let any org member read another member's booking
+
+### File(s)/line(s)
+
+- `app/routers/bookings.py:162-186`
+
+### What was the bug?
+
+`get_booking` scoped the lookup only by `Room.org_id == user.org_id`. Unlike
+`cancel_booking` (a few lines below it), it never checked whether the
+requesting non-admin user actually owned the booking.
+
+### Why did it cause incorrect behavior?
+
+Rule 10 requires members to read/cancel only their own bookings, with
+another member's booking id returning `404 BOOKING_NOT_FOUND`. Any member
+could instead read any other member's booking in the same org, including
+its refund history.
+
+### How was it reproduced?
+
+```text
+Member Bob creates a booking. Member Charlie (same org) calls
+GET /bookings/{bob_booking_id}.
+```
+
+Expected:
+
+```text
+404 BOOKING_NOT_FOUND
+```
+
+Actual before fix:
+
+```text
+200 OK with Bob's booking JSON
+```
+
+### How was it fixed?
+
+```python
+if user.role != "admin" and booking.user_id != user.id:
+    raise AppError(404, "BOOKING_NOT_FOUND", "Booking not found")
+```
+added to `get_booking`, mirroring the check already present in `cancel_booking`.
+
+### Verification after fix
+
+```bash
+# same reproduction as above
+```
+
+Result:
+
+```text
+BUG-020 charlie reads bob's booking: 404
+```
+
+---
+
+## BUG-021 - Refund rounding truncated instead of rounding half-cents up
+
+### File(s)/line(s)
+
+- `app/routers/bookings.py:220` (response calculation)
+- `app/services/refunds.py:14-18` (`log_refund`)
+
+### What was the bug?
+
+The response used Python's `round()` (round-half-to-even) on a float, and
+`log_refund` independently recomputed the amount via float division and
+`int()` truncation — two separate formulas that happened to often agree but
+were not guaranteed to.
+
+### Why did it cause incorrect behavior?
+
+The contract specifies half-cents round up, with the explicit example
+"50% of 1001 = 501". Both existing implementations returned 500. The dual,
+independently-computed values also risked violating the requirement that
+the cancel response amount equal the stored `RefundLog` amount.
+
+### How was it reproduced?
+
+```text
+Create a 1001-cent, 1-hour booking; cancel it with 24-48h notice (50% tier).
+```
+
+Expected:
+
+```text
+refund_amount_cents == 501, RefundLog.amount_cents == 501
+```
+
+Actual before fix:
+
+```text
+refund_amount_cents == 500, RefundLog.amount_cents == 500
+```
+
+### How was it fixed?
+
+Centralized the calculation with exact integer round-half-up math (no
+floats) inside `log_refund`, and made the API response read the persisted
+value back instead of recomputing it:
+
+```python
+# app/services/refunds.py
+amount_cents = (booking.price_cents * percent + 50) // 100
+```
+```python
+# app/routers/bookings.py
+refund_entry = log_refund(db, booking, refund_percent)
+refund_amount_cents = refund_entry.amount_cents
+```
+
+### Verification after fix
+
+```bash
+# same reproduction as above
+```
+
+Result:
+
+```text
+refund_amount_cents for 50% of 1001: 501
+RefundLog amount_cents: 501
+```
+
+---
+
+## BUG-022 - Opposite notification lock order could deadlock the service
+
+### File(s)/line(s)
+
+- `app/services/notifications.py:24-35`
+
+### What was the bug?
+
+`notify_created` acquired `_email_lock` then `_audit_lock`; `notify_cancelled`
+acquired `_audit_lock` then `_email_lock` — a classic lock-order inversion.
+
+### Why did it cause incorrect behavior?
+
+Rule 16 requires no combination of concurrent valid requests to hang the
+service. A concurrent booking create and cancel could each hold one lock
+while waiting forever for the other, deadlocking both request threads (and,
+under load, eventually exhausting the whole worker thread pool).
+
+### How was it reproduced?
+
+```text
+Run notify_created and notify_cancelled concurrently (e.g. a POST /bookings
+and a POST /bookings/{id}/cancel fired at the same time).
+```
+
+Expected:
+
+```text
+Both requests complete.
+```
+
+Actual before fix:
+
+```text
+Both threads could remain blocked indefinitely.
+```
+
+### How was it fixed?
+
+Made `notify_cancelled` acquire the locks in the same order as
+`notify_created` (email, then audit):
+
+```python
+def notify_cancelled(booking) -> None:
+    with _email_lock:
+        with _audit_lock:
+            _write_audit("cancelled", booking)
+        _send_email("cancelled", booking)
+```
+
+### Verification after fix
+
+```bash
+# concurrent create + cancel against the same room
+```
+
+Result:
+
+```text
+BUG-022 concurrent create+cancel notifications completed without deadlock: True
+```
+
+---
+
+## BUG-023 - Usage-report cache not invalidated when a booking is created
+
+### File(s)/line(s)
+
+- `app/routers/bookings.py:132-134` (`create_booking`)
+
+### What was the bug?
+
+`create_booking` invalidated the room availability cache but never the
+org's usage-report cache.
+
+### Why did it cause incorrect behavior?
+
+Rule 12 requires the usage report to reflect current state immediately.
+A cached report undercounted a booking created after the report was cached.
+
+### How was it reproduced?
+
+```text
+Fetch a usage report for a date range, create a new confirmed booking in
+that range, fetch the same report again.
+```
+
+Expected:
+
+```text
+Second report count increases by 1.
+```
+
+Actual before fix:
+
+```text
+Second report returns the stale cached count.
+```
+
+### How was it fixed?
+
+```python
+cache.invalidate_report(user.org_id)
+```
+added after the booking commit in `create_booking`.
+
+### Verification after fix
+
+```bash
+# same reproduction as above
+```
+
+Result:
+
+```text
+usage report before=0 after=1
+```
+
+---
+
+## BUG-024 - Availability cache not invalidated when a booking is cancelled
+
+### File(s)/line(s)
+
+- `app/routers/bookings.py:228-230` (`cancel_booking`)
+
+### What was the bug?
+
+`cancel_booking` invalidated the usage-report cache but never the room/date
+availability cache.
+
+### Why did it cause incorrect behavior?
+
+Rule 13 requires availability to reflect current state immediately. A
+cached day's availability kept showing a cancelled booking as a busy
+interval.
+
+### How was it reproduced?
+
+```text
+Create a booking, fetch availability for its date, cancel the booking,
+fetch availability again.
+```
+
+Expected:
+
+```text
+Cancelled booking removed from busy intervals.
+```
+
+Actual before fix:
+
+```text
+Cancelled booking remained in the cached busy interval list.
+```
+
+### How was it fixed?
+
+```python
+cache.invalidate_availability(booking.room_id, booking.start_time.date().isoformat())
+```
+added after the cancellation commit in `cancel_booking`.
+
+### Verification after fix
+
+```bash
+# same reproduction as above
+```
+
+Result:
+
+```text
+busy before cancel: 1, after cancel: 0
+```
+
+---
+
+## BUG-025 - Admin export returned 200 for unknown or cross-org room_id
+
+### File(s)/line(s)
+
+- `app/routers/admin.py:65-73`
+
+### What was the bug?
+
+`export()` never validated a supplied `room_id` against the caller's org
+before generating the CSV — an unscoped/nonexistent `room_id` simply
+produced zero matching rows.
+
+### Why did it cause incorrect behavior?
+
+Rule 9 requires cross-org (and by extension unknown) resource IDs to
+behave as non-existent, returning 404 — not a silent empty success.
+
+### How was it reproduced?
+
+```text
+Org A admin calls GET /admin/export?room_id=<org_B_room_id>&include_all=true
+and GET /admin/export?room_id=999999&include_all=true.
+```
+
+Expected:
+
+```text
+404 ROOM_NOT_FOUND for both
+```
+
+Actual before fix:
+
+```text
+200 OK with only the CSV header, for both
+```
+
+### How was it fixed?
+
+```python
+if room_id is not None:
+    room = db.query(Room).filter(Room.id == room_id, Room.org_id == admin.org_id).first()
+    if room is None:
+        raise AppError(404, "ROOM_NOT_FOUND", "Room not found")
+```
+added at the top of the `export` handler, before generating the CSV.
+
+### Verification after fix
+
+```bash
+# same reproduction as above
+```
+
+Result:
+
+```text
+cross-org export room_id: 404 ROOM_NOT_FOUND
+unknown export room_id: 404 ROOM_NOT_FOUND
+```
+
+---
+
+## BUG-026 - Usage-report cache not invalidated when a room is created
+
+### File(s)/line(s)
+
+- `app/routers/rooms.py:42-58` (`create_room`)
+
+### What was the bug?
+
+`create_room` inserted the new room but never invalidated the org's
+usage-report cache.
+
+### Why did it cause incorrect behavior?
+
+Rule 12 requires the usage report to include rooms with zero bookings and
+reflect current state immediately. A room created after a report was
+cached for that org/date-range was silently omitted from the report.
+
+### How was it reproduced?
+
+```text
+Fetch a usage report for a date range (0 rooms), create a new room in the
+same org, fetch the same report again.
+```
+
+Expected:
+
+```text
+Second report includes the new room with 0 confirmed bookings.
+```
+
+Actual before fix:
+
+```text
+Second report still shows 0 rooms (stale cache).
+```
+
+### How was it fixed?
+
+```python
+cache.invalidate_report(admin.org_id)
+```
+added after the room commit in `create_room`.
+
+### Verification after fix
+
+```bash
+# same reproduction as above
+```
+
+Result:
+
+```text
+rooms in report before creating a room: 0
+rooms in report after creating a room: 1
 ```
 
 ---
