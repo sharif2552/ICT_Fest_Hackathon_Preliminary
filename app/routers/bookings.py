@@ -131,6 +131,7 @@ def create_booking(
 
     stats.record_create(room.id, price_cents)
     cache.invalidate_availability(room.id, start.date().isoformat())
+    cache.invalidate_report(user.org_id)
     notifications.notify_created(booking)
 
     return serialize_booking(booking)
@@ -172,6 +173,8 @@ def get_booking(
         .first()
     )
     if booking is None:
+        raise AppError(404, "BOOKING_NOT_FOUND", "Booking not found")
+    if user.role != "admin" and booking.user_id != user.id:
         raise AppError(404, "BOOKING_NOT_FOUND", "Booking not found")
 
     response = serialize_booking(booking)
@@ -217,9 +220,8 @@ def cancel_booking(
         else:
             refund_percent = 0
 
-        refund_amount_cents = round(booking.price_cents * (refund_percent / 100.0))
-
-        log_refund(db, booking, refund_percent)
+        refund_entry = log_refund(db, booking, refund_percent)
+        refund_amount_cents = refund_entry.amount_cents
 
         _settlement_pause()
         booking.status = "cancelled"
@@ -227,6 +229,7 @@ def cancel_booking(
 
     stats.record_cancel(booking.room_id, booking.price_cents)
     cache.invalidate_report(user.org_id)
+    cache.invalidate_availability(booking.room_id, booking.start_time.date().isoformat())
     notifications.notify_cancelled(booking)
 
     return {
