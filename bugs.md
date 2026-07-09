@@ -95,7 +95,7 @@ PUSHED
 | BUG-029 | REPORTED | Abidur | 2026-07-09 | auth / token invalidation persistence | Hard | | Logout revocations and used refresh-token JTIs were forgotten after API restart because they lived only in memory (`app/models.py:72-79`, `app/auth.py:89-143`, `app/routers/auth.py:77-96`) |
 | BUG-030 | REPORTED | Abidur | 2026-07-09 | bookings / malformed datetime validation | Medium | | Malformed `start_time`/`end_time` returned 500 because `ValueError` escaped datetime parsing; fixed to return `400 INVALID_BOOKING_WINDOW` (`app/routers/bookings.py:93-97`, `app/timeutils.py:5-14`) |
 | BUG-031 | REPORTED | Abidur | 2026-07-09 | auth / concurrent organization registration | Hard | | Concurrent first registrations for the same new org returned 2x500; fixed by recovering from org/user unique races (`app/routers/auth.py:24-60`, `app/models.py:17-26`) |
-| BUG-032 | REPORTED | nahid | 2026-07-09 | auth / concurrent logout-refresh token invalidation | Hard | 7af6a2c | Concurrent identical logout or refresh calls raced on `TokenInvalidation.jti` unique constraint, raising uncaught `IntegrityError` -> raw non-JSON 500; fixed by catching `IntegrityError` and rolling back (`app/auth.py:93-106`) |
+| BUG-032 | REPORTED | nahid + Abidur | 2026-07-09 | auth / concurrent logout-refresh token invalidation | Hard | 7af6a2c | Concurrent identical logout/refresh calls raced on `TokenInvalidation.jti`, raising uncaught `IntegrityError` -> raw non-JSON 500 (fixed with try/except+rollback in `_persist_invalidation`); separately, concurrent identical `/auth/refresh` calls could each pass the single-use check before either recorded it, so more than one could return 200 for the same refresh_token, violating Rule 8 -> closed with an `_invalidation_lock` around `consume_refresh_token`/`revoke_access_token` (`app/auth.py:93-143`) |
 | BUG-033 | REPORTED | nahid | 2026-07-09 | cancellation / refund-log and status-update atomicity | Hard | 7977e72 | `log_refund()` commits independently of the booking status-update commit in `cancel_booking`; a crash/failure between the two commits leaves a durable refund with `status` still `confirmed`, so a client retry re-enters `log_refund` and logs a second, unguarded duplicate refund; fixed by making `log_refund` flush (not commit) so the caller's single commit covers both writes atomically (`app/services/refunds.py:14-28`, `app/routers/bookings.py:226-231`) |
 
 ## Confirmed Fixes
@@ -133,7 +133,7 @@ PUSHED
 | BUG-029 | token invalidation state stored only in process-local sets | current BUG-029 fix commit | Cleared in-memory sets -> persisted access/refresh invalidations still found | Abidur | Yes |
 | BUG-030 | malformed datetime strings raised uncaught `ValueError` in booking creation | current BUG-030 fix commit | malformed start_time/end_time -> 400 INVALID_BOOKING_WINDOW | Abidur | Yes |
 | BUG-031 | concurrent org registration raced on unique organization name | current BUG-031 fix commit | 40 concurrent same-org registrations -> 40x201, roles 1 admin / 39 members | Abidur | Yes |
-| BUG-032 | `_persist_invalidation` checked-then-inserted against `TokenInvalidation.jti` unique constraint with no lock and no error handling | 7af6a2c (claim) + fix commit | 8-thread `threading.Barrier`-forced concurrent call -> 0 errors, 1 row (was 7/8 `IntegrityError`); 20x concurrent HTTP `/auth/logout` -> 0x500, all JSON | nahid | Yes |
+| BUG-032 | `_persist_invalidation` checked-then-inserted against `TokenInvalidation.jti` with no lock/error handling; separately, `consume_refresh_token`'s already-used check + record was unguarded | 7af6a2c (claim) + fix commit + `_invalidation_lock` addendum | 8-thread `threading.Barrier` concurrent call -> 0 errors, 1 row; 20x concurrent HTTP `/auth/logout` -> 0x500, all JSON; 8x concurrent HTTP `/auth/refresh` with same token -> exactly 1x200, 7x401 | nahid + Abidur | Yes |
 | BUG-033 | `log_refund()` committed independently of the caller's booking-status-update commit, so a crash between the two commits left a durable refund against a still-`confirmed` booking, letting a retry double-log the refund | current BUG-033 fix commit | Monkeypatched `Session.commit` to fail on the status-update commit; crash left 0 refund rows + `confirmed` status (was 1 refund row + `confirmed` before the fix); retry then produced exactly 1 refund row + `cancelled` status | nahid | Yes |
 
 ## Push Log
@@ -1808,6 +1808,20 @@ concurrent request already recorded the invalidation for the same token, which
 is exactly the intended end state, so it is treated as a no-op rather than an
 error.
 
+**Addendum (found independently while auditing concurrency coverage):** the
+`IntegrityError` catch alone stops the 500 crash, but does not stop the
+*business-logic* race — `consume_refresh_token`'s "already used" check
+(`payload["jti"] in _used_refresh_tokens or _is_invalidated(db, payload)`) and
+its subsequent record-as-used step were still unguarded. Concurrent identical
+`/auth/refresh` calls could each pass that check before either recorded the
+token as used, and since the persisted-insert conflict is now silently
+swallowed, *every* concurrent request would return `200` with a fresh token
+pair instead of exactly one - violating Rule 8's "refreshing ... invalidates
+the presented refresh token (reuse -> 401)" under concurrency. Closed by
+adding `_invalidation_lock` (`threading.Lock`) around the full body of both
+`consume_refresh_token` and `revoke_access_token`, so the check-then-record
+sequence is now atomic; the `IntegrityError` catch remains as defense in depth.
+
 #### Verification after fix
 
 ```text
@@ -1816,6 +1830,11 @@ count 1 (was 7/8 IntegrityError before the fix).
 HTTP test (20 concurrent /auth/logout, same token): Counter({401: 18, 200: 2}),
 0x500, all responses JSON.
 pytest tests/ -> 1 passed (no regression).
+
+Addendum: 8 concurrent HTTP POST /auth/refresh with the same refresh_token ->
+[200, 401, 401, 401, 401, 401, 401, 401] (exactly one 200, holds Rule 8 under
+concurrency; was previously capable of multiple 200s with only the
+IntegrityError catch in place).
 ```
 
 ### BUG-033 - Refund log and booking status update are not committed atomically

@@ -42,6 +42,7 @@ raw evidence live in `bugs.md`.
 | BUG-029 | Hard | `app/models.py:72-79`, `app/auth.py:89-143`, `app/routers/auth.py:77-96` | Fixed | Logout and refresh-token invalidation were forgotten after restart |
 | BUG-030 | Medium | `app/routers/bookings.py:93-97`, `app/timeutils.py:5-14` | Fixed | Malformed booking datetimes returned 500 instead of `400 INVALID_BOOKING_WINDOW` |
 | BUG-031 | Hard | `app/routers/auth.py:24-60`, `app/models.py:17-26` | Fixed | Concurrent first registrations for one org could return 500 |
+| BUG-032 | Hard | `app/auth.py:93-143` | Fixed | Concurrent identical logout/refresh calls crashed on a token-invalidation race; concurrent identical refresh calls could also both succeed (single-use violation) |
 
 ---
 
@@ -2069,11 +2070,27 @@ another concurrent request already recorded the invalidation for the same
 token — exactly the intended end state — so it is treated as a no-op instead
 of propagating as an error.
 
+**Addendum (found independently while auditing concurrency coverage):** the
+`IntegrityError` catch stops the crash, but not the underlying business-logic
+race. `consume_refresh_token`'s "already used" check
+(`payload["jti"] in _used_refresh_tokens or _is_invalidated(db, payload)`)
+and its subsequent record-as-used step were still unguarded — concurrent
+identical `/auth/refresh` calls could each pass that check before either
+recorded the token as used, and since the persisted-insert conflict is now
+silently swallowed, *every* concurrent request would return `200` with a
+fresh token pair instead of exactly one, violating Rule 8's single-use
+guarantee under concurrency. Fixed by adding `_invalidation_lock`
+(`threading.Lock`, `app/auth.py`) around the full body of both
+`consume_refresh_token` and `revoke_access_token`, making the check-then-
+record sequence atomic. The `IntegrityError` catch stays in place as defense
+in depth.
+
 ### Verification after fix
 
 ```text
 Re-run the same 8-thread barrier test and the same 20x concurrent
-/auth/logout HTTP test.
+/auth/logout HTTP test, plus 8 concurrent HTTP POST /auth/refresh requests
+presenting the same refresh_token.
 ```
 
 Result:
@@ -2082,6 +2099,9 @@ Result:
 Barrier test: 8/8 succeeded, 0 errors, final row count 1 (was 7/8
 IntegrityError before the fix).
 HTTP test: Counter({401: 18, 200: 2}), 0x500, all responses JSON.
+Refresh reuse test: [200, 401, 401, 401, 401, 401, 401, 401] — exactly one
+200 out of 8 concurrent identical refresh calls (previously more than one
+200 was possible with only the IntegrityError catch in place).
 ```
 
 ---
