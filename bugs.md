@@ -103,6 +103,7 @@ PUSHED
 | BUG-037 | REPORTED | Abidur | 2026-07-09 | auth / malformed JWT required claims | Hard | | Signed JWTs missing required claims are not rejected as invalid tokens: missing `jti`/`sub` or non-integer `sub` returned 500, and missing `exp` authenticated successfully with 200; fixed by requiring and validating JWT claims/lifetimes before auth dependencies use them (`app/auth.py:24`, `app/auth.py:92-132`, `app/auth.py:184-208`) |
 | BUG-038 | REPORTED | nahid | 2026-07-09 | auth / registration schema validation | Medium | 2230548 | `RegisterRequest` has no `min_length` on `password`/`username`/`org_name`; live-tested `POST /auth/register` with `password:""` -> 201, then `POST /auth/login` with the same empty password -> 200 with valid tokens, so any org's admin account can be created with a blank/guessable password (`app/schemas.py:5-14`) |
 | BUG-039 | REPORTED | nahid | 2026-07-09 | rooms / pricing schema validation | Medium | 2230548 | `RoomCreateRequest`/`Room` never validate `capacity`/`hourly_rate_cents` as non-negative; live-tested `POST /rooms` with `hourly_rate_cents:-100000` -> 201, booking it stored `price_cents:-200000`, and `GET /admin/usage-report` then showed `revenue_cents:-200000`, corrupting org financial reports (`app/schemas.py:21-25`, `app/models.py:36-44`, `app/routers/rooms.py:41-57`) |
+| BUG-040 | ROOT_CAUSED | Abidur | 2026-07-09 | documented test workflow / missing dependency | Easy | | README says `pip install -r requirements.txt` then `pytest`, but the built image lacks pytest and `python -m pytest tests -v` fails with `No module named pytest` (`requirements.txt`, `README.md:16-25`) |
 
 ## Confirmed Fixes
 
@@ -2385,3 +2386,48 @@ Re-ran the original repro end-to-end: the negative-price room can no longer be
 created, so the downstream booking/report corruption is unreachable.
 docker compose exec api python -m pytest tests/ -> 1 passed
 ```
+
+---
+
+### BUG-040 - README-documented pytest workflow is missing pytest
+
+Status: ROOT_CAUSED
+Owner: Abidur
+Last updated: 2026-07-09
+Difficulty guess: Easy
+Area / workflow: documented test workflow / missing dependency
+
+#### Reproduction
+
+```text
+1. Build the project image from the checked-out repository.
+2. Run python -m pytest tests -v inside the image after requirements are installed.
+```
+
+#### Expected behavior
+
+```text
+README.md documents:
+  pip install -r requirements.txt
+  pytest
+
+The smoke test runner should therefore be installed by the documented
+requirements step.
+```
+
+#### Actual behavior before fix
+
+```text
+/usr/local/bin/python: No module named pytest
+```
+
+#### Suspected or confirmed file/line
+
+- `requirements.txt`
+- `README.md:16-25`
+
+#### Root cause
+
+The repository includes `tests/test_smoke.py` and documents `pytest` as the
+local smoke-test command, but `requirements.txt` only installs runtime
+dependencies and omits the test runner.
