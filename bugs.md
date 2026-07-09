@@ -68,8 +68,8 @@ PUSHED
 | BUG-002 | VERIFIED | nahid | 2026-07-09 | auth / JWT secret config | Medium | | `app/config.py:8`, `docker-compose.yml:6` |
 | BUG-003 | VERIFIED | nahid | 2026-07-09 | admin export / multi-tenancy | Hard | | `app/services/export.py:22-50` |
 | BUG-004 | VERIFIED | nahid | 2026-07-09 | auth / logout revocation | Medium | | `app/auth.py:85-98` |
-| BUG-005 | ROOT_CAUSED | nahid | 2026-07-09 | auth / refresh token reuse | Medium | | `app/routers/auth.py:81-93` |
-| BUG-006 | ROOT_CAUSED | nahid | 2026-07-09 | auth / registration | Medium | | `app/routers/auth.py:32-43` |
+| BUG-005 | VERIFIED | nahid | 2026-07-09 | auth / refresh token reuse | Medium | | `app/routers/auth.py:81-93` |
+| BUG-006 | VERIFIED | nahid | 2026-07-09 | auth / registration | Medium | | `app/routers/auth.py:32-43` |
 | BUG-007 | ROOT_CAUSED | nahid | 2026-07-09 | bookings / create validation | Medium | | `app/routers/bookings.py:86` |
 | BUG-008 | ROOT_CAUSED | nahid | 2026-07-09 | bookings / create validation | Medium | | `app/routers/bookings.py:89-94` |
 | BUG-009 | ROOT_CAUSED | nahid | 2026-07-09 | bookings / conflict check | Medium | | `app/routers/bookings.py:50` |
@@ -329,7 +329,7 @@ Check `payload.get("jti") in _revoked_tokens` instead of `sub`.
 
 ### BUG-005 - Refresh tokens are not single-use (unlimited replay)
 
-Status: ROOT_CAUSED
+Status: VERIFIED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Medium
@@ -377,7 +377,7 @@ Track used refresh-token `jti`s (mirroring the access-token revocation set) and 
 
 ### BUG-006 - Registration on a taken username returns 200 instead of 409 USERNAME_TAKEN
 
-Status: ROOT_CAUSED
+Status: VERIFIED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Medium

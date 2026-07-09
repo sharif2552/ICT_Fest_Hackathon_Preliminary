@@ -23,6 +23,10 @@ from .models import User
 # longer be used.
 _revoked_tokens: set[str] = set()
 
+# Refresh tokens are single-use: once presented to /auth/refresh, their jti
+# is recorded here so a replay of the same token is rejected.
+_used_refresh_tokens: set[str] = set()
+
 _PBKDF2_ROUNDS = 100_000
 
 
@@ -84,6 +88,13 @@ def decode_token(token: str) -> dict:
 
 def revoke_access_token(payload: dict) -> None:
     _revoked_tokens.add(payload["jti"])
+
+
+def consume_refresh_token(payload: dict) -> None:
+    """Mark a refresh token's jti as used; raise 401 if it was already used."""
+    if payload["jti"] in _used_refresh_tokens:
+        raise AppError(401, "UNAUTHORIZED", "Refresh token already used")
+    _used_refresh_tokens.add(payload["jti"])
 
 
 def get_token_payload(request: Request) -> dict:
