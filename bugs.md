@@ -83,12 +83,12 @@ PUSHED
 | BUG-017 | REPORTED | nahid | 2026-07-09 | reference codes / concurrency | Hard | | `app/services/reference.py:17-21` |
 | BUG-018 | REPORTED | nahid | 2026-07-09 | rate limit / concurrency | Medium | | `app/services/ratelimit.py:18-26` |
 | BUG-019 | REPORTED | nahid | 2026-07-09 | room stats / concurrency | Medium | | `app/services/stats.py:15-26` |
-| BUG-020 | CLAIMED | codex | 2026-07-09 | bookings / same-org member visibility | Hard | | Suspected missing owner check in `GET /bookings/{id}` (`app/routers/bookings.py`) |
-| BUG-021 | CLAIMED | codex | 2026-07-09 | cancellation / refund rounding | Medium | | Suspected half-cent rounding/truncation bug in `app/routers/bookings.py` and `app/services/refunds.py` |
-| BUG-022 | CLAIMED | codex | 2026-07-09 | notifications / liveness | Hard | | Suspected lock-order deadlock between `notify_created` and `notify_cancelled` (`app/services/notifications.py`) |
-| BUG-023 | CLAIMED | codex | 2026-07-09 | admin usage-report / cache freshness | Medium | | Suspected stale report cache after booking create (`app/routers/bookings.py`, `app/cache.py`) |
-| BUG-024 | CLAIMED | codex | 2026-07-09 | room availability / cache freshness | Medium | | Suspected stale availability cache after booking cancel (`app/routers/bookings.py`, `app/cache.py`) |
-| BUG-025 | CLAIMED | codex | 2026-07-09 | admin export / room_id tenancy error handling | Hard | | Suspected cross-org or unknown `room_id` returns 200 empty CSV instead of 404 (`app/services/export.py`) |
+| BUG-020 | ROOT_CAUSED | codex | 2026-07-09 | bookings / same-org member visibility | Hard | | Same-org member can read another member's booking via `GET /bookings/{id}` (`app/routers/bookings.py:168-186`) |
+| BUG-021 | ROOT_CAUSED | codex | 2026-07-09 | cancellation / refund rounding | Medium | | 50% of 1001 cents returns/stores 500, not required 501 (`app/routers/bookings.py:220`, `app/services/refunds.py:14-18`) |
+| BUG-022 | ROOT_CAUSED | codex | 2026-07-09 | notifications / liveness | Hard | | Opposite lock order deadlocks concurrent create/cancel notifications (`app/services/notifications.py:24-35`) |
+| BUG-023 | ROOT_CAUSED | codex | 2026-07-09 | admin usage-report / cache freshness | Medium | | Cached usage report stays stale after booking create (`app/routers/bookings.py:132-134`, `app/cache.py`) |
+| BUG-024 | ROOT_CAUSED | codex | 2026-07-09 | room availability / cache freshness | Medium | | Cached availability stays stale after booking cancel (`app/routers/bookings.py:228-230`, `app/cache.py`) |
+| BUG-025 | ROOT_CAUSED | codex | 2026-07-09 | admin export / room_id tenancy error handling | Hard | | Unknown/cross-org `room_id` returns 200 empty CSV instead of 404 (`app/routers/admin.py:65-73`, `app/services/export.py`) |
 
 ## Confirmed Fixes
 
@@ -1082,3 +1082,197 @@ Non-atomic read-modify-write on the shared stats dict.
 #### Fix summary
 
 Guard both functions with a `threading.Lock`, matching the pattern already used in `services/notifications.py`.
+
+---
+
+### BUG-020 - Same-org members can read each other's booking details
+
+Status: ROOT_CAUSED
+Owner: codex
+Last updated: 2026-07-09
+Difficulty guess: Hard
+Area / workflow: bookings / same-org member visibility
+
+#### Reproduction
+
+```text
+In one org, member Bob creates a booking. Member Charlie calls
+GET /bookings/{bob_booking_id}.
+```
+
+#### Expected behavior
+
+```text
+404 BOOKING_NOT_FOUND (Rule 10: members may read only their own bookings)
+```
+
+#### Actual behavior before fix
+
+```text
+200 OK with Bob's booking JSON
+```
+
+#### Root cause
+
+`get_booking` scopes only by `Room.org_id`, unlike `cancel_booking`, and does not reject non-admin users when `booking.user_id != user.id`.
+
+---
+
+### BUG-021 - Refund half-cent rounding truncates instead of rounding up
+
+Status: ROOT_CAUSED
+Owner: codex
+Last updated: 2026-07-09
+Difficulty guess: Medium
+Area / workflow: cancellation / refund rounding
+
+#### Reproduction
+
+```text
+Create a 1001-cent, 1-hour booking with 24-48h notice and cancel it.
+```
+
+#### Expected behavior
+
+```text
+refund_amount_cents == 501 and RefundLog.amount_cents == 501
+```
+
+#### Actual behavior before fix
+
+```text
+refund_amount_cents == 500 and RefundLog.amount_cents == 500
+```
+
+#### Root cause
+
+The response uses Python `round(...)` and `log_refund` truncates through float math and `int(...)`; neither implements the contract's half-cents-round-up rule.
+
+---
+
+### BUG-022 - Opposite notification lock order can deadlock
+
+Status: ROOT_CAUSED
+Owner: codex
+Last updated: 2026-07-09
+Difficulty guess: Hard
+Area / workflow: notifications / liveness
+
+#### Reproduction
+
+```text
+Run notify_created and notify_cancelled concurrently.
+```
+
+#### Expected behavior
+
+```text
+Both calls finish; Rule 16 says no concurrent valid requests may hang the service.
+```
+
+#### Actual behavior before fix
+
+```text
+Both threads remain alive after timeout.
+```
+
+#### Root cause
+
+`notify_created` locks email then audit; `notify_cancelled` locks audit then email, so concurrent calls can each hold one lock while waiting forever for the other.
+
+---
+
+### BUG-023 - Usage report cache is not invalidated after booking create
+
+Status: ROOT_CAUSED
+Owner: codex
+Last updated: 2026-07-09
+Difficulty guess: Medium
+Area / workflow: admin usage-report / cache freshness
+
+#### Reproduction
+
+```text
+Fetch a usage report for a date, create a booking on that date, then fetch the same report again.
+```
+
+#### Expected behavior
+
+```text
+The second report includes the new confirmed booking and revenue.
+```
+
+#### Actual behavior before fix
+
+```text
+The second report returns the cached zero-booking row.
+```
+
+#### Root cause
+
+`create_booking` invalidates room availability but not the org usage-report cache, despite Rule 12 requiring reports to reflect current state immediately.
+
+---
+
+### BUG-024 - Availability cache is not invalidated after booking cancel
+
+Status: ROOT_CAUSED
+Owner: codex
+Last updated: 2026-07-09
+Difficulty guess: Medium
+Area / workflow: room availability / cache freshness
+
+#### Reproduction
+
+```text
+Create a booking, fetch room availability for its date, cancel the booking, then fetch availability again.
+```
+
+#### Expected behavior
+
+```text
+The cancelled booking is removed from busy intervals.
+```
+
+#### Actual behavior before fix
+
+```text
+The cancelled booking remains in the cached busy interval list.
+```
+
+#### Root cause
+
+`cancel_booking` invalidates the report cache but not the room/date availability cache, despite Rule 13 requiring availability to reflect current state immediately.
+
+---
+
+### BUG-025 - Admin export returns 200 for unknown or cross-org room_id
+
+Status: ROOT_CAUSED
+Owner: codex
+Last updated: 2026-07-09
+Difficulty guess: Hard
+Area / workflow: admin export / room_id tenancy error handling
+
+#### Reproduction
+
+```text
+Org A admin calls GET /admin/export?room_id=<org_B_room_id>&include_all=true
+and GET /admin/export?room_id=999999&include_all=true.
+```
+
+#### Expected behavior
+
+```text
+404 ROOM_NOT_FOUND for cross-org or unknown room IDs (Rule 9)
+```
+
+#### Actual behavior before fix
+
+```text
+200 OK with only the CSV header
+```
+
+#### Root cause
+
+The export endpoint never validates a provided `room_id` against the caller's org before generating the CSV.
