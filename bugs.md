@@ -104,7 +104,7 @@ PUSHED
 | BUG-038 | REPORTED | nahid | 2026-07-09 | auth / registration schema validation | Medium | 2230548 | `RegisterRequest` has no `min_length` on `password`/`username`/`org_name`; live-tested `POST /auth/register` with `password:""` -> 201, then `POST /auth/login` with the same empty password -> 200 with valid tokens, so any org's admin account can be created with a blank/guessable password (`app/schemas.py:5-14`) |
 | BUG-039 | REPORTED | nahid | 2026-07-09 | rooms / pricing schema validation | Medium | 2230548 | `RoomCreateRequest`/`Room` never validate `capacity`/`hourly_rate_cents` as non-negative; live-tested `POST /rooms` with `hourly_rate_cents:-100000` -> 201, booking it stored `price_cents:-200000`, and `GET /admin/usage-report` then showed `revenue_cents:-200000`, corrupting org financial reports (`app/schemas.py:21-25`, `app/models.py:36-44`, `app/routers/rooms.py:41-57`) |
 | BUG-040 | REPORTED | Abidur | 2026-07-09 | documented test workflow / missing dependency | Easy | | README says `pip install -r requirements.txt` then `pytest`, but the built image lacked pytest and `python -m pytest tests -v` failed with `No module named pytest`; fixed by adding a pinned pytest dependency (`requirements.txt:6`, `README.md:23-27`) |
-| BUG-041 | CLAIMED | nahid | 2026-07-09 | auth / login timing side-channel | Medium | | `POST /auth/login` only runs `verify_password` (PBKDF2, 100k rounds) when a matching org+username exists; live-measured median response time is ~28-32ms for a valid org+username with wrong password vs ~4ms for a nonexistent org or nonexistent username, letting an unauthenticated attacker enumerate valid org names/usernames by timing alone (`app/routers/auth.py:70-86`) |
+| BUG-041 | REPORTED | nahid | 2026-07-09 | auth / login timing side-channel | Medium | ea85b7c | `POST /auth/login` only runs `verify_password` (PBKDF2, 100k rounds) when a matching org+username exists; live-measured median response time is ~28-32ms for a valid org+username with wrong password vs ~4ms for a nonexistent org or nonexistent username, letting an unauthenticated attacker enumerate valid org names/usernames by timing alone (`app/routers/auth.py:70-86`) |
 
 ## Confirmed Fixes
 
@@ -150,6 +150,7 @@ PUSHED
 | BUG-038 | `RegisterRequest.password` had no `min_length`, so an empty string was accepted as a valid password | 2230548 | `POST /auth/register` with `password:""` -> 422 (was 201); `password:"12345"` (5 chars) -> 422; `password:"abc123"` (6 chars) -> 201 and logs in normally; existing smoke test's `"pw12345"` (7 chars) still passes | nahid | Yes |
 | BUG-039 | `RoomCreateRequest.capacity`/`hourly_rate_cents` had no bounds, so admins could store negative pricing | 2230548 | `POST /rooms` with `capacity:-1,hourly_rate_cents:-1` -> 422 (was 201); `hourly_rate_cents:0` (free room) still -> 201; re-ran the original repro (negative-price room -> booking -> usage-report) and confirmed the create step now fails at 422 before a negative `price_cents` or negative `revenue_cents` can ever be stored | nahid | Yes |
 | BUG-040 | `requirements.txt` omitted the README-documented pytest runner | current BUG-040 fix commit | Rebuilt image after adding `pytest==8.2.2`; `python -m pytest tests -v` -> 1 passed, 1 warning | Abidur | Yes |
+| BUG-041 | `login()` only called `verify_password` (PBKDF2, 100k rounds) when a matching org+username was found in the DB, so the request short-circuited in ~4ms instead when the org or username didn't exist | ea85b7c | Median of 15 requests each: before fix, valid-org+user-wrong-pw ~28-32ms vs nonexistent-org/nonexistent-user ~4ms (clear oracle); after fix, all three cases converge to ~27-29ms. Confirmed correct-password login still returns 200 and wrong-password/nonexistent-org logins still return 401 | nahid | Yes |
 
 ## Push Log
 
@@ -2446,4 +2447,83 @@ documented install command sufficient for running the included smoke test.
 ```text
 docker compose build api -> success, pytest installed in the image
 python -m pytest tests -v -> 1 passed, 1 warning
+```
+
+---
+
+### BUG-041 - Login timing side-channel reveals whether an org/username exists
+
+Status: REPORTED
+Owner: nahid
+Last updated: 2026-07-09
+Difficulty guess: Medium
+Area / workflow: auth / login timing side-channel
+
+#### Reproduction
+
+```text
+1. POST /auth/login repeatedly with a valid org_name + valid username + wrong
+   password. Measure the median response time over 15 requests.
+2. POST /auth/login repeatedly with a nonexistent org_name (same username,
+   same wrong password). Measure the median response time.
+3. POST /auth/login repeatedly with a valid org_name + nonexistent username.
+   Measure the median response time.
+4. Compare the three medians.
+```
+
+#### Expected behavior
+
+`POST /auth/login` should take a consistent amount of time regardless of
+whether the supplied org/username correspond to a real account, so an
+unauthenticated caller cannot use response latency to determine whether a
+given org name or username exists.
+
+#### Actual behavior before fix
+
+```text
+valid org + valid user + wrong pw : ~28-32 ms (median, n=15)
+nonexistent org                   : ~4 ms (median, n=15)
+valid org + nonexistent user      : ~4 ms (median, n=15)
+```
+
+A ~7x, trivially-measurable timing gap consistently distinguished "org and
+username both exist" from "org or username doesn't exist," letting an
+unauthenticated attacker enumerate valid organization names and usernames
+purely by timing, with no credentials and no rate-limit-triggering signal
+(these requests aren't gated by the booking rate limiter).
+
+#### Suspected or confirmed file/line
+
+- `app/routers/auth.py:70-86` (`login`)
+
+#### Root cause
+
+`login()` only calls `verify_password` (PBKDF2-HMAC-SHA256, 100,000 rounds)
+when `db.query(Organization)`/`db.query(User)` actually finds a matching
+row. When the org or username doesn't exist, the function short-circuits
+immediately after the query, skipping the expensive hash comparison
+entirely — so the code path taken (and its cost) directly depends on
+whether the target account exists.
+
+#### Fix summary
+
+Added a fixed dummy password hash (`_DUMMY_PASSWORD_HASH`, computed once at
+import time in `app/routers/auth.py`) and changed `login()` to always call
+`verify_password` — against the real user's hash when found, or against the
+dummy hash when no matching org/user exists — before evaluating the
+`user is None or not password_ok` check. This makes every login attempt pay
+the same PBKDF2 cost regardless of whether the account exists, closing the
+timing oracle while leaving the actual authentication decision (and correct
+401 on any failure) unchanged.
+
+#### Verification after fix
+
+```text
+valid org + valid user + wrong pw : ~28.8 ms (median, n=15)
+nonexistent org                   : ~28.3 ms (median, n=15)
+valid org + nonexistent user      : ~27.5 ms (median, n=15)
+
+Correct credentials -> 200 with valid access/refresh tokens (unchanged)
+Wrong password / nonexistent org -> 401 INVALID_CREDENTIALS (unchanged)
+docker compose exec api python3 -m pytest tests/ -v -> 1 passed, 1 warning
 ```

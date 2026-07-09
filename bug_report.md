@@ -51,6 +51,7 @@ raw evidence live in `bugs.md`.
 | BUG-038 | Medium | `app/schemas.py:5-14` | Fixed | Registration accepted an empty/blank password; any org's admin account could be created with password `""` |
 | BUG-039 | Medium | `app/schemas.py:21-25`, `app/models.py:36-44`, `app/routers/rooms.py:41-57` | Fixed | Room creation accepted negative capacity/hourly rate, letting a negative booking price corrupt admin revenue reports |
 | BUG-040 | Easy | `requirements.txt:6`, `README.md:23-27` | Fixed | README-documented `pytest` smoke-test workflow failed because pytest was not installed |
+| BUG-041 | Medium | `app/routers/auth.py:70-86` | Fixed | Login response time leaked whether an org/username exists, letting an unauthenticated caller enumerate valid accounts via timing |
 
 ---
 
@@ -2665,6 +2666,76 @@ Added `pytest==8.2.2` to `requirements.txt`.
 ```text
 docker compose build api -> success, pytest installed in the image
 python -m pytest tests -v -> 1 passed, 1 warning
+```
+
+---
+
+## BUG-041 - Login timing side-channel leaked account existence
+
+### File(s)/line(s)
+
+- `app/routers/auth.py:70-86` (`login`)
+
+### What was the bug?
+
+`login()` only ran `verify_password` (PBKDF2-HMAC-SHA256, 100,000 rounds)
+when a matching organization and username were actually found in the
+database. When either didn't exist, the function returned `401` immediately
+after the (cheap) database lookup, skipping the expensive hash comparison.
+
+### Why did it cause incorrect behavior?
+
+The two code paths took measurably different amounts of time: a real
+org+username with a wrong password paid the full PBKDF2 cost (~28-32ms),
+while a nonexistent org or username short-circuited in ~4ms. This is a
+consistent, easily-measurable (~7x) timing oracle that lets an
+unauthenticated attacker determine whether a given organization name or
+username exists, with no valid credentials and without touching any
+rate-limited endpoint (the booking rate limiter doesn't cover `/auth/login`).
+
+### How was it reproduced?
+
+```text
+Sent 15 POST /auth/login requests for each of three cases and took the
+median response time:
+  1. valid org_name + valid username + wrong password
+  2. nonexistent org_name + same username + same wrong password
+  3. valid org_name + nonexistent username + same wrong password
+```
+
+Expected:
+
+```text
+All three cases take a similar amount of time.
+```
+
+Actual before fix:
+
+```text
+valid org + valid user + wrong pw : ~28-32 ms
+nonexistent org                   : ~4 ms
+valid org + nonexistent user      : ~4 ms
+```
+
+### How was it fixed?
+
+Added a fixed dummy password hash computed once at import time
+(`_DUMMY_PASSWORD_HASH` in `app/routers/auth.py`). `login()` now always calls
+`verify_password` — against the real user's stored hash when the account
+exists, or against the dummy hash when it doesn't — before deciding whether
+to return `401`. Every login attempt now pays the same PBKDF2 cost
+regardless of whether the org/username exists.
+
+### Verification after fix
+
+```text
+valid org + valid user + wrong pw : ~28.8 ms (median, n=15)
+nonexistent org                   : ~28.3 ms (median, n=15)
+valid org + nonexistent user      : ~27.5 ms (median, n=15)
+
+Correct credentials -> 200 with valid access/refresh tokens (unchanged)
+Wrong password / nonexistent org -> 401 INVALID_CREDENTIALS (unchanged)
+docker compose exec api python3 -m pytest tests/ -v -> 1 passed, 1 warning
 ```
 
 ---
