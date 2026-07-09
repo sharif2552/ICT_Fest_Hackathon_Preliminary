@@ -92,6 +92,7 @@ PUSHED
 | BUG-026 | REPORTED | Abidur | 2026-07-09 | admin usage-report / room creation cache freshness | Medium | | Cached usage report omits rooms created after the report was cached (`app/routers/rooms.py:42-58`, `app/cache.py`) |
 | BUG-027 | REPORTED | Abidur | 2026-07-09 | room stats / restart persistence | Hard | | Restarted process returns stats 0/0 for persisted confirmed booking because stats live only in memory (`app/routers/rooms.py:103-119`, `app/services/stats.py`) |
 | BUG-028 | REPORTED | Abidur | 2026-07-09 | reference codes / restart uniqueness | Hard | | Restarted process issues duplicate `CW-001000` for persisted DB because the counter resets to `1000` (`app/services/reference.py:23-34`, `app/routers/bookings.py:117-125`) |
+| BUG-029 | CLAIMED | Abidur | 2026-07-09 | auth / token invalidation persistence | Hard | | Suspected logout revocations and used refresh-token JTIs are forgotten after API restart because they live only in memory (`app/auth.py`, `app/routers/auth.py`) |
 
 ## Confirmed Fixes
 
@@ -1548,3 +1549,44 @@ Result:
 ```text
 CW-001001
 ```
+
+---
+
+### BUG-029 - Token invalidation is forgotten after API restart
+
+Status: CLAIMED
+Owner: Abidur
+Last updated: 2026-07-09
+Difficulty guess: Hard
+Area / workflow: auth / token invalidation persistence
+
+#### Reproduction
+
+```text
+Use a refresh token once or log out an access token, restart the API process
+while the JWT is still unexpired, then reuse the same token.
+```
+
+#### Expected behavior
+
+```text
+Logged-out access tokens and already-used refresh tokens remain invalid after
+restart and return 401.
+```
+
+#### Actual behavior before fix
+
+```text
+Suspected: process restart clears `_revoked_tokens` and `_used_refresh_tokens`,
+so the same cryptographically valid JWT can be accepted again.
+```
+
+#### Suspected or confirmed file/line
+
+- `app/auth.py`
+- `app/routers/auth.py`
+
+#### Root cause
+
+Pending focused reproduction. The likely cause is that token invalidation state
+is stored only in process-local sets and is not persisted in SQLite.
