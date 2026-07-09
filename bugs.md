@@ -64,31 +64,49 @@ PUSHED
 
 | Bug ID | Status | Owner | Last Updated | Area / Workflow | Difficulty Guess | Commit(s) | Evidence |
 |---|---|---|---|---|---|---|---|
-| BUG-001 | VERIFIED | nahid | 2026-07-09 | auth / access token lifetime | Medium | | `app/auth.py:50` |
-| BUG-002 | VERIFIED | nahid | 2026-07-09 | auth / JWT secret config | Medium | | `app/config.py:8`, `docker-compose.yml:6` |
-| BUG-003 | VERIFIED | nahid | 2026-07-09 | admin export / multi-tenancy | Hard | | `app/services/export.py:22-50` |
-| BUG-004 | VERIFIED | nahid | 2026-07-09 | auth / logout revocation | Medium | | `app/auth.py:85-98` |
-| BUG-005 | VERIFIED | nahid | 2026-07-09 | auth / refresh token reuse | Medium | | `app/routers/auth.py:81-93` |
-| BUG-006 | VERIFIED | nahid | 2026-07-09 | auth / registration | Medium | | `app/routers/auth.py:32-43` |
-| BUG-007 | VERIFIED | nahid | 2026-07-09 | bookings / create validation | Medium | | `app/routers/bookings.py:86` |
-| BUG-008 | VERIFIED | nahid | 2026-07-09 | bookings / create validation | Medium | | `app/routers/bookings.py:89-94` |
-| BUG-009 | VERIFIED | nahid | 2026-07-09 | bookings / conflict check | Medium | | `app/routers/bookings.py:50` |
-| BUG-010 | VERIFIED | nahid | 2026-07-09 | bookings / cancel refund | Medium | | `app/routers/bookings.py:198-208` |
-| BUG-011 | VERIFIED | nahid | 2026-07-09 | bookings / get detail | Easy | | `app/routers/bookings.py:166` |
-| BUG-012 | VERIFIED | nahid | 2026-07-09 | bookings / list pagination | Medium | | `app/routers/bookings.py:137-139` |
-| BUG-013 | VERIFIED | nahid | 2026-07-09 | timeutils / UTC conversion | Hard | | `app/timeutils.py:11-14` |
-| BUG-014 | VERIFIED | nahid | 2026-07-09 | bookings / concurrency | Hard | | `app/routers/bookings.py:42-52` |
-| BUG-015 | VERIFIED | nahid | 2026-07-09 | bookings / concurrency | Hard | | `app/routers/bookings.py:55-71` |
-| BUG-016 | VERIFIED | nahid | 2026-07-09 | bookings / concurrency | Hard | | `app/routers/bookings.py:178-225` |
-| BUG-017 | VERIFIED | nahid | 2026-07-09 | reference codes / concurrency | Hard | | `app/services/reference.py:17-21` |
-| BUG-018 | VERIFIED | nahid | 2026-07-09 | rate limit / concurrency | Medium | | `app/services/ratelimit.py:18-26` |
-| BUG-019 | VERIFIED | nahid | 2026-07-09 | room stats / concurrency | Medium | | `app/services/stats.py:15-26` |
+| BUG-001 | REPORTED | nahid | 2026-07-09 | auth / access token lifetime | Medium | | `app/auth.py:50` |
+| BUG-002 | REPORTED | nahid | 2026-07-09 | auth / JWT secret config | Medium | | `app/config.py:8`, `docker-compose.yml:6` |
+| BUG-003 | REPORTED | nahid | 2026-07-09 | admin export / multi-tenancy | Hard | | `app/services/export.py:22-50` |
+| BUG-004 | REPORTED | nahid | 2026-07-09 | auth / logout revocation | Medium | | `app/auth.py:85-98` |
+| BUG-005 | REPORTED | nahid | 2026-07-09 | auth / refresh token reuse | Medium | | `app/routers/auth.py:81-93` |
+| BUG-006 | REPORTED | nahid | 2026-07-09 | auth / registration | Medium | | `app/routers/auth.py:32-43` |
+| BUG-007 | REPORTED | nahid | 2026-07-09 | bookings / create validation | Medium | | `app/routers/bookings.py:86` |
+| BUG-008 | REPORTED | nahid | 2026-07-09 | bookings / create validation | Medium | | `app/routers/bookings.py:89-94` |
+| BUG-009 | REPORTED | nahid | 2026-07-09 | bookings / conflict check | Medium | | `app/routers/bookings.py:50` |
+| BUG-010 | REPORTED | nahid | 2026-07-09 | bookings / cancel refund | Medium | | `app/routers/bookings.py:198-208` |
+| BUG-011 | REPORTED | nahid | 2026-07-09 | bookings / get detail | Easy | | `app/routers/bookings.py:166` |
+| BUG-012 | REPORTED | nahid | 2026-07-09 | bookings / list pagination | Medium | | `app/routers/bookings.py:137-139` |
+| BUG-013 | REPORTED | nahid | 2026-07-09 | timeutils / UTC conversion | Hard | | `app/timeutils.py:11-14` |
+| BUG-014 | REPORTED | nahid | 2026-07-09 | bookings / concurrency | Hard | | `app/routers/bookings.py:42-52` |
+| BUG-015 | REPORTED | nahid | 2026-07-09 | bookings / concurrency | Hard | | `app/routers/bookings.py:55-71` |
+| BUG-016 | REPORTED | nahid | 2026-07-09 | bookings / concurrency | Hard | | `app/routers/bookings.py:178-225` |
+| BUG-017 | REPORTED | nahid | 2026-07-09 | reference codes / concurrency | Hard | | `app/services/reference.py:17-21` |
+| BUG-018 | REPORTED | nahid | 2026-07-09 | rate limit / concurrency | Medium | | `app/services/ratelimit.py:18-26` |
+| BUG-019 | REPORTED | nahid | 2026-07-09 | room stats / concurrency | Medium | | `app/services/stats.py:15-26` |
 
 ## Confirmed Fixes
 
 | Bug ID | Root Cause | Fix Commit | Verification Command / Result | Verified By | Added To `bug_report.md` |
 |---|---|---|---|---|---|
-| _None yet_ |  |  |  |  |  |
+| BUG-001 | Double unit conversion in access-token lifetime | 1886077 | Decoded JWT: exp-iat == 900 | nahid | Yes |
+| BUG-002 | Predictable hardcoded JWT secret default | 1886077 | `docker compose up --build` boots cleanly, no committed literal secret | nahid | Yes |
+| BUG-003 | Missing org_id filter on one export code path | c8c0f7a | Cross-org export request returns empty CSV | nahid | Yes |
+| BUG-004 | Revocation check compared `sub` instead of `jti` | 1886077 | Token reused after logout -> 401 | nahid | Yes |
+| BUG-005 | No used-refresh-token tracking | 1d116b9 | Replayed refresh_token -> 401 | nahid | Yes |
+| BUG-006 | Duplicate-username branch returned data instead of erroring | 1d116b9 | Duplicate register -> 409 USERNAME_TAKEN | nahid | Yes |
+| BUG-007 | Unauthorized 300s grace window on start_time check | 02cdf6a | Past start_time -> 400 INVALID_BOOKING_WINDOW | nahid | Yes |
+| BUG-008 | MIN_DURATION_HOURS defined but never checked | 02cdf6a | Zero-duration booking -> 400 INVALID_BOOKING_WINDOW | nahid | Yes |
+| BUG-009 | Non-strict `<=` in overlap comparison | 02cdf6a | Back-to-back booking -> 201 | nahid | Yes |
+| BUG-010 | Hardcoded 50 in <24h branch; off-by-one at 48h | 44026a8 | <24h cancel -> 0%; 48h+ cancel -> 100% | nahid | Yes |
+| BUG-011 | start_time overwritten with created_at after serialization | 44026a8 | Detail start_time matches create-response start_time | nahid | Yes |
+| BUG-012 | Off-by-one offset, hardcoded limit, wrong sort direction | 44026a8 | page=1&limit=2 returns 2 ascending items, no skip | nahid | Yes |
+| BUG-013 | `.replace(tzinfo=None)` instead of UTC conversion | 02cdf6a | +05:00 input stored/returned as exact UTC equivalent | nahid | Yes |
+| BUG-014 | TOCTOU: conflict check and insert not atomic | 2594189 | 5 concurrent same-slot bookings -> 1x201, 4x409 | nahid | Yes |
+| BUG-015 | TOCTOU: quota count and insert not atomic | 2594189 | 3 concurrent over-quota bookings -> 1x201, 2x409 | nahid | Yes |
+| BUG-016 | TOCTOU: cancel status check and update not atomic | 2594189 | 5 concurrent cancels -> 1x200, 4x409, 1 RefundLog | nahid | Yes |
+| BUG-017 | Non-atomic counter read-modify-write | 2594189 | 5 concurrent bookings -> 5 unique reference_codes | nahid | Yes |
+| BUG-018 | Non-atomic rate-limit bucket read-modify-write | 2594189 | 31 requests in window -> exactly 20 succeed | nahid | Yes |
+| BUG-019 | Non-atomic stats counter read-modify-write | 2594189 | 6 concurrent creates -> stats count == 6 | nahid | Yes |
 
 ## Push Log
 
@@ -104,21 +122,22 @@ Adapt this table to the actual problem statement and repository.
 
 | Area | Case | Result | Bug ID / Notes |
 |---|---|---|---|
-| Startup | App boots with documented command | Not tested | |
-| Health/docs | Public status/docs route works if documented | Not tested | |
-| Config/env | Required env vars and sample config work | Not tested | |
-| Auth/session | Valid credentials or session flow works if applicable | Not tested | |
-| Auth/session | Missing/invalid credentials fail correctly if applicable | Not tested | |
-| Authorization | User/resource isolation is enforced if applicable | Not tested | |
-| Core create/write | Documented create/write operation works | Not tested | |
-| Core read/list | Documented read/list operation returns correct scope | Not tested | |
-| Core update | Documented update operation persists correct data | Not tested | |
-| Core delete/cleanup | Documented delete/cleanup operation affects only intended data | Not tested | |
-| Validation | Missing/malformed input returns expected error | Not tested | |
-| Error handling | Missing resource or invalid action returns expected error | Not tested | |
-| Persistence | Data survives a new request/session when it should | Not tested | |
-| Response shape | Output matches documented schema/format | Not tested | |
-| Regression | Existing automated tests pass | Not tested | |
+| Startup | App boots with documented command (`docker compose up --build`) | Pass | |
+| Health/docs | `GET /health` returns `{"status":"ok"}` | Pass | |
+| Config/env | `JWT_SECRET` no longer a predictable committed literal | Pass | BUG-002 |
+| Auth/session | Login/refresh issue usable tokens; access token lifetime exactly 900s | Pass | BUG-001 |
+| Auth/session | Logout invalidates the access token; refresh token is single-use | Pass | BUG-004, BUG-005 |
+| Auth/session | Duplicate username registration returns 409 | Pass | BUG-006 |
+| Authorization | Cross-org room/booking IDs behave as 404; export scoped to caller's org | Pass | BUG-003 |
+| Core create/write | Booking create validates window, duration, conflict, quota | Pass | BUG-007, BUG-008, BUG-009 |
+| Core read/list | `GET /bookings` pagination/ordering matches contract | Pass | BUG-012 |
+| Core update | Cancellation refund tiers match policy exactly | Pass | BUG-010 |
+| Core delete/cleanup | Concurrent cancels of one booking produce exactly one refund | Pass | BUG-016 |
+| Validation | Past/zero-duration/overlong booking windows rejected | Pass | BUG-007, BUG-008 |
+| Error handling | Unknown/cross-org resources return the documented 404 codes | Pass | BUG-003 |
+| Persistence | Booking/refund/stats state persists correctly across requests | Pass | BUG-016, BUG-019 |
+| Response shape | Booking detail returns correct start_time field | Pass | BUG-011 |
+| Regression | `docker compose exec api python -m pytest tests/ -v` | Pass | 1 passed |
 
 ## Rejected Suspicions
 
@@ -132,7 +151,7 @@ Add a new entry below for each reproduced bug. Keep the details practical: what 
 
 ### BUG-001 - Access token lifetime is 15 hours instead of 900 seconds
 
-Status: VERIFIED
+Status: REPORTED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Medium
@@ -177,7 +196,7 @@ Use `timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)` directly.
 
 ### BUG-002 - Hardcoded/insecure default JWT signing secret
 
-Status: VERIFIED
+Status: REPORTED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Medium
@@ -227,7 +246,7 @@ Require `JWT_SECRET` from the environment with no insecure default (fail fast if
 
 ### BUG-003 - Cross-tenant IDOR in GET /admin/export
 
-Status: VERIFIED
+Status: REPORTED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Hard
@@ -281,7 +300,7 @@ Add an `org_id` filter (join on `Room.org_id`) to `fetch_bookings_raw` and threa
 
 ### BUG-004 - Logout does not actually revoke the access token
 
-Status: VERIFIED
+Status: REPORTED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Medium
@@ -329,7 +348,7 @@ Check `payload.get("jti") in _revoked_tokens` instead of `sub`.
 
 ### BUG-005 - Refresh tokens are not single-use (unlimited replay)
 
-Status: VERIFIED
+Status: REPORTED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Medium
@@ -377,7 +396,7 @@ Track used refresh-token `jti`s (mirroring the access-token revocation set) and 
 
 ### BUG-006 - Registration on a taken username returns 200 instead of 409 USERNAME_TAKEN
 
-Status: VERIFIED
+Status: REPORTED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Medium
@@ -424,7 +443,7 @@ Raise `AppError(409, "USERNAME_TAKEN", ...)` when a user with that username alre
 
 ### BUG-007 - Booking start_time validation allows times already in the past
 
-Status: VERIFIED
+Status: REPORTED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Medium
@@ -469,7 +488,7 @@ Reject whenever `start <= now`.
 
 ### BUG-008 - Missing minimum-duration / end-after-start validation
 
-Status: VERIFIED
+Status: REPORTED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Medium
@@ -515,7 +534,7 @@ Add `if duration_hours < MIN_DURATION_HOURS: raise AppError(400, "INVALID_BOOKIN
 
 ### BUG-009 - Room conflict check rejects valid back-to-back bookings
 
-Status: VERIFIED
+Status: REPORTED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Medium
@@ -560,7 +579,7 @@ Change to `b.start_time < end and start < b.end_time`.
 
 ### BUG-010 - Cancellation refund is always >=50%, never 0%
 
-Status: VERIFIED
+Status: REPORTED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Medium
@@ -614,7 +633,7 @@ else: refund_percent = 0
 
 ### BUG-011 - GET /bookings/{id} returns created_at as start_time
 
-Status: VERIFIED
+Status: REPORTED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Easy
@@ -658,7 +677,7 @@ Delete the `response["start_time"] = iso_utc(booking.created_at)` line.
 
 ### BUG-012 - GET /bookings pagination skips records, ignores limit, wrong sort order
 
-Status: VERIFIED
+Status: REPORTED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Medium
@@ -721,7 +740,7 @@ items = (
 
 ### BUG-013 - parse_input_datetime does not convert non-UTC offsets to UTC
 
-Status: VERIFIED
+Status: REPORTED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Hard
@@ -778,7 +797,7 @@ if dt.tzinfo is not None:
 
 ### BUG-014 - Double-booking race condition (no locking around conflict check)
 
-Status: VERIFIED
+Status: REPORTED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Hard
@@ -825,7 +844,7 @@ Serialize per-room booking creation, e.g. `db.query(Room).filter(Room.id == room
 
 ### BUG-015 - Booking quota race condition
 
-Status: VERIFIED
+Status: REPORTED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Hard
@@ -871,7 +890,7 @@ Cover the quota count and the subsequent insert with the same per-room/per-user 
 
 ### BUG-016 - Duplicate-refund race condition on concurrent cancel
 
-Status: VERIFIED
+Status: REPORTED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Hard
@@ -917,7 +936,7 @@ Lock the booking row (or perform an atomic conditional update `UPDATE bookings S
 
 ### BUG-017 - Duplicate reference_code under concurrent booking creation
 
-Status: VERIFIED
+Status: REPORTED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Hard
@@ -968,7 +987,7 @@ Guard the read-increment with a `threading.Lock`.
 
 ### BUG-018 - Rate limiter bypass under concurrent requests
 
-Status: VERIFIED
+Status: REPORTED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Medium
@@ -1015,7 +1034,7 @@ Guard the bucket read/trim/append/write with a per-user (or global) `threading.L
 
 ### BUG-019 - Room stats lost-update race condition
 
-Status: VERIFIED
+Status: REPORTED
 Owner: nahid
 Last updated: 2026-07-09
 Difficulty guess: Medium
