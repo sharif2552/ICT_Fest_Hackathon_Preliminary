@@ -21,6 +21,8 @@ from .database import get_db
 from .errors import AppError
 from .models import TokenInvalidation, User
 
+_REQUIRED_CLAIMS = ["sub", "org", "role", "jti", "iat", "exp", "type"]
+
 # Access tokens presented to /auth/logout are recorded here so they can no
 # longer be used.
 _revoked_tokens: set[str] = set()
@@ -87,11 +89,47 @@ def create_refresh_token(user: User) -> str:
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
+def _invalid_token() -> AppError:
+    return AppError(401, "UNAUTHORIZED", "Invalid or expired token")
+
+
+def _validate_token_claims(payload: dict) -> None:
+    try:
+        int(payload["sub"])
+        int(payload["org"])
+    except (TypeError, ValueError):
+        raise _invalid_token()
+
+    if not isinstance(payload["jti"], str) or not payload["jti"]:
+        raise _invalid_token()
+    if payload["role"] not in {"admin", "member"}:
+        raise _invalid_token()
+    if payload["type"] not in {"access", "refresh"}:
+        raise _invalid_token()
+    if not isinstance(payload["iat"], int) or not isinstance(payload["exp"], int):
+        raise _invalid_token()
+
+    expected_lifetime = (
+        ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        if payload["type"] == "access"
+        else REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60
+    )
+    if payload["exp"] - payload["iat"] != expected_lifetime:
+        raise _invalid_token()
+
+
 def decode_token(token: str) -> dict:
     try:
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(
+            token,
+            JWT_SECRET,
+            algorithms=[JWT_ALGORITHM],
+            options={"require": _REQUIRED_CLAIMS},
+        )
     except jwt.PyJWTError:
-        raise AppError(401, "UNAUTHORIZED", "Invalid or expired token")
+        raise _invalid_token()
+    _validate_token_claims(payload)
+    return payload
 
 
 def _expires_at(payload: dict) -> datetime:
@@ -166,6 +204,8 @@ def get_current_user(
     user = db.query(User).filter(User.id == int(payload["sub"])).first()
     if user is None:
         raise AppError(401, "UNAUTHORIZED", "Unknown user")
+    if user.org_id != int(payload["org"]) or user.role != payload["role"]:
+        raise _invalid_token()
     return user
 
 

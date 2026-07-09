@@ -47,6 +47,7 @@ raw evidence live in `bugs.md`.
 | BUG-034 | Medium | `app/services/ratelimit.py`, `app/models.py:81-86` | Fixed | Booking rate-limit window lived only in memory and silently reset on every API restart |
 | BUG-035 | Medium | `app/main.py`, `app/errors.py` | Fixed | No catch-all exception handler; any uncaught non-`AppError` exception returned a malformed non-JSON 500 |
 | BUG-036 | Medium | `app/main.py:20-32`, `app/auth.py:146-159`, `app/routers/bookings.py:85-91` | Fixed | Malformed-body `POST /bookings` requests bypassed the documented per-user rate limit |
+| BUG-037 | Hard | `app/auth.py:24`, `app/auth.py:92-132`, `app/auth.py:184-208` | Fixed | Malformed signed JWTs missing required claims returned 500 or authenticated instead of 401 |
 | BUG-038 | Medium | `app/schemas.py:5-14` | Fixed | Registration accepted an empty/blank password; any org's admin account could be created with password `""` |
 | BUG-039 | Medium | `app/schemas.py:21-25`, `app/models.py:36-44`, `app/routers/rooms.py:41-57` | Fixed | Room creation accepted negative capacity/hourly rate, letting a negative booking price corrupt admin revenue reports |
 
@@ -2429,6 +2430,76 @@ Control flow with a fresh user:
 
 ---
 
+## BUG-037 - Malformed JWTs missing required claims were not rejected as invalid tokens
+
+### File(s)/line(s)
+
+- `app/auth.py:24`
+- `app/auth.py:92-132`
+- `app/auth.py:184-208`
+
+### What was the bug?
+
+`decode_token()` accepted any correctly signed JWT that PyJWT could decode, but
+it did not require the contract's mandatory JWT claims. Later auth code then
+indexed `payload["jti"]`, `payload["type"]`, and `payload["sub"]` directly.
+
+### Why did it cause incorrect behavior?
+
+Rule 8 requires tokens to contain `sub`, `org`, `role`, `jti`, `iat`, `exp`,
+and `type`; missing, malformed, invalid, expired, or blacklisted tokens must
+return 401. Missing `jti`/`sub` or a non-integer `sub` escaped as runtime
+exceptions and became 500s. A signed token missing `exp` was worse: PyJWT does
+not require `exp` unless configured, so the token authenticated successfully.
+
+### How was it reproduced?
+
+```text
+1. Run the API with a known JWT_SECRET.
+2. Register a valid user.
+3. Sign access tokens with the same secret but remove `jti`, `sub`, or `exp`,
+   or set `sub` to a non-integer string.
+4. Use each token on GET /rooms.
+```
+
+Expected:
+
+```text
+Every malformed token is rejected with 401 UNAUTHORIZED.
+```
+
+Actual before fix:
+
+```text
+missing_jti -> 500 {"detail":"Internal server error","code":"INTERNAL_ERROR"}
+missing_sub -> 500 {"detail":"Internal server error","code":"INTERNAL_ERROR"}
+missing_exp -> 200 []
+bad_sub     -> 500 {"detail":"Internal server error","code":"INTERNAL_ERROR"}
+```
+
+### How was it fixed?
+
+Configured `jwt.decode()` to require `sub`, `org`, `role`, `jti`, `iat`, `exp`,
+and `type`. Added claim-shape validation for integer user/org IDs, non-empty
+JTIs, known roles/types, integer time claims, and exact access/refresh token
+lifetimes. `get_current_user` now also rejects tokens whose `org` or `role`
+claims do not match the database user.
+
+### Verification after fix
+
+```text
+missing_jti -> 401 {"detail":"Invalid or expired token","code":"UNAUTHORIZED"}
+missing_sub -> 401 {"detail":"Invalid or expired token","code":"UNAUTHORIZED"}
+missing_exp -> 401 {"detail":"Invalid or expired token","code":"UNAUTHORIZED"}
+bad_sub     -> 401 {"detail":"Invalid or expired token","code":"UNAUTHORIZED"}
+
+Regression:
+  full API audit -> PASS
+  concurrency audit -> PASS
+```
+
+---
+
 ## BUG-038 - Registration accepted an empty/blank password
 
 ### File(s)/line(s)
@@ -2445,7 +2516,7 @@ constraint, so an empty string was a valid password.
 Any org's registration can create an admin account (the first registration
 for a new org name becomes admin, per the documented registration rule). With
 no password length enforced, an attacker who knows or guesses an org name
-and username could register/log in with `password:""` — a credential that
+and username could register/log in with `password:""` -- a credential that
 requires no guessing at all.
 
 ### How was it reproduced?
@@ -2457,7 +2528,7 @@ POST /auth/register {"org_name":"x","username":"admin1","password":""}
 Expected:
 
 ```text
-422 Unprocessable Entity — a blank password should be rejected the same way
+422 Unprocessable Entity -- a blank password should be rejected the same way
 any other malformed field is.
 ```
 
@@ -2472,10 +2543,8 @@ POST /auth/login with the same blank password -> 200 with valid tokens
 
 Added `Field(min_length=6, max_length=128)` to `RegisterRequest.password` and
 `Field(min_length=1, max_length=100)` to `org_name`/`username` in
-`app/schemas.py`. 6 characters was chosen so the existing smoke test's
-fixture password (`"pw12345"`, 7 characters) keeps working unmodified — the
-fix closes the concrete empty-password hole without redesigning password
-policy.
+`app/schemas.py`. Six characters keeps the existing smoke-test fixture
+password (`"pw12345"`) valid while closing the concrete empty-password hole.
 
 ### Verification after fix
 
