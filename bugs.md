@@ -100,6 +100,7 @@ PUSHED
 | BUG-034 | REPORTED | nahid | 2026-07-09 | booking rate limit / restart persistence | Medium | 8a8c01e | Rate-limit buckets lived only in a process-local dict (`_buckets`); an API restart silently reset every user's 20-req/60s window, same in-memory-state-lost-on-restart class as BUG-027/028/029; fixed with a persisted `RateLimitEvent` table (`app/services/ratelimit.py`, `app/models.py:81-86`) |
 | BUG-035 | REPORTED | nahid | 2026-07-09 | error handling / missing catch-all exception handler | Medium | 0a0b8a6 | `app/main.py` only registered a handler for `AppError`; any other uncaught exception (the exact root symptom behind BUG-030/031/032/033, each patched locally) fell through to Starlette's default handler and returned a raw `text/plain` 500, violating the documented `{"detail","code"}` JSON contract. Reproduced live with a generic `ZeroDivisionError` unrelated to any known bug; fixed with a global `Exception` handler (`app/main.py`, `app/errors.py`) |
 | BUG-036 | REPORTED | Abidur | 2026-07-09 | booking rate limit / framework validation requests | Medium | | Authenticated `POST /bookings` requests that fail FastAPI body validation did not count toward the documented 20-requests/60s rate limit; fixed by moving the per-user booking rate limit into middleware that runs before body validation and removing the endpoint-local duplicate check (`app/main.py:20-32`, `app/auth.py:146-159`, `app/routers/bookings.py:85-91`) |
+| BUG-037 | ROOT_CAUSED | Abidur | 2026-07-09 | auth / malformed JWT required claims | Hard | | Signed JWTs missing required claims are not rejected as invalid tokens: missing `jti`/`sub` or non-integer `sub` returns 500, and missing `exp` authenticates successfully with 200, violating Rule 8's required JWT claims and 401 invalid-token behavior (`app/auth.py:76-159`) |
 
 ## Confirmed Fixes
 
@@ -2162,3 +2163,52 @@ Control flow with a fresh user:
   POST /rooms -> 201
   valid POST /bookings -> 201
 ```
+
+---
+
+### BUG-037 - Malformed JWTs missing required claims are not rejected as invalid tokens
+
+Status: ROOT_CAUSED
+Owner: Abidur
+Last updated: 2026-07-09
+Difficulty guess: Hard
+Area / workflow: auth / malformed JWT required claims
+
+#### Reproduction
+
+```text
+1. Run the API with a known JWT_SECRET.
+2. Register a valid user.
+3. Sign access tokens with the same secret but remove one required claim at a
+   time (`jti`, `sub`, or `exp`) or set `sub` to a non-integer string.
+4. Use each token on GET /rooms.
+```
+
+#### Expected behavior
+
+```text
+Rule 8 requires JWTs to contain sub, org, role, jti, iat, exp, and type.
+Missing, malformed, invalid, expired, or blacklisted tokens must return 401.
+```
+
+#### Actual behavior before fix
+
+```text
+missing_jti -> 500 {"detail":"Internal server error","code":"INTERNAL_ERROR"}
+missing_sub -> 500 {"detail":"Internal server error","code":"INTERNAL_ERROR"}
+missing_exp -> 200 []
+bad_sub     -> 500 {"detail":"Internal server error","code":"INTERNAL_ERROR"}
+```
+
+#### Suspected or confirmed file/line
+
+- `app/auth.py:76-159`
+
+#### Root cause
+
+`decode_token()` accepts any correctly signed JWT that PyJWT can decode, but it
+does not require the contract's mandatory claims. Later code indexes
+`payload["jti"]`, `payload["type"]`, and `payload["sub"]` directly, so missing
+or malformed claims escape as `KeyError`/`ValueError` and become 500s. Because
+PyJWT does not require `exp` unless configured to do so, a signed token without
+`exp` is accepted and can authenticate.
